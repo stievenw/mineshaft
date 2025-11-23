@@ -10,21 +10,71 @@ import com.mineshaft.world.lighting.LightingEngine;
 import com.mineshaft.world.lighting.SunLightCalculator;
 
 import java.util.*;
+import java.util.concurrent.*;
 
 import static org.lwjgl.opengl.GL11.*;
 
 /**
- * ✅ Chunk renderer with TEXTURED realistic lighting - Fixed warnings
+ * ⚡ FIXED: OpenGL-safe async mesh building
+ * Data preparation in worker threads, VBO creation on main thread
  */
 public class ChunkRenderer {
     
-    private Map<Chunk, ChunkMesh> solidMeshes = new HashMap<>();
-    private Map<Chunk, ChunkMesh> waterMeshes = new HashMap<>();
-    private Map<Chunk, ChunkMesh> translucentMeshes = new HashMap<>();
+    private Map<Chunk, ChunkMesh> solidMeshes = new ConcurrentHashMap<>();
+    private Map<Chunk, ChunkMesh> waterMeshes = new ConcurrentHashMap<>();
+    private Map<Chunk, ChunkMesh> translucentMeshes = new ConcurrentHashMap<>();
     private World world;
     private LightingEngine lightingEngine;
     
-    // ✅ REMOVED: Unused field smoothLighting
+    private final ExecutorService meshBuilder;
+    private final Set<Chunk> buildingChunks = ConcurrentHashMap.newKeySet();
+    private final Queue<ChunkBuildTask> buildQueue = new ConcurrentLinkedQueue<>();
+    
+    // ⚡ NEW: Queue for VBO creation on main thread
+    private final Queue<MeshDataResult> pendingVBOCreation = new ConcurrentLinkedQueue<>();
+    
+    private static final int MAX_BUILDS_PER_FRAME = 3;
+    private static final int MAX_VBO_UPLOADS_PER_FRAME = 5;
+    private static final int WORKER_THREADS = 2;
+    
+    /**
+     * Task for queuing chunk rebuilds
+     */
+    private static class ChunkBuildTask {
+        Chunk chunk;
+        double distanceSquared;
+        
+        ChunkBuildTask(Chunk chunk, double distSq) {
+            this.chunk = chunk;
+            this.distanceSquared = distSq;
+        }
+    }
+    
+    /**
+     * ⚡ NEW: Mesh data prepared in worker thread, ready for VBO creation
+     */
+    private static class MeshDataResult {
+        Chunk chunk;
+        List<Float> solidVertices;
+        List<Float> waterVertices;
+        List<Float> translucentVertices;
+        
+        MeshDataResult(Chunk chunk, List<Float> solid, List<Float> water, List<Float> translucent) {
+            this.chunk = chunk;
+            this.solidVertices = solid;
+            this.waterVertices = water;
+            this.translucentVertices = translucent;
+        }
+    }
+    
+    public ChunkRenderer() {
+        this.meshBuilder = Executors.newFixedThreadPool(WORKER_THREADS, r -> {
+            Thread t = new Thread(r, "MeshBuilder");
+            t.setDaemon(true);
+            t.setPriority(Thread.NORM_PRIORITY - 1);
+            return t;
+        });
+    }
     
     public void setWorld(World world) {
         this.world = world;
@@ -34,13 +84,176 @@ public class ChunkRenderer {
         this.lightingEngine = lightingEngine;
     }
     
-    // ✅ REMOVED: Unused setSmoothLighting method
-    
     public void renderChunk(Chunk chunk, Camera camera) {
-        if (!solidMeshes.containsKey(chunk) || chunk.needsRebuild()) {
-            buildChunkMesh(chunk);
-            chunk.setNeedsRebuild(false);
+        if (chunk.needsRebuild() && !buildingChunks.contains(chunk)) {
+            queueChunkRebuild(chunk, camera);
         }
+    }
+    
+    private void queueChunkRebuild(Chunk chunk, Camera camera) {
+        float chunkCenterX = chunk.getChunkX() * Chunk.CHUNK_SIZE + Chunk.CHUNK_SIZE / 2.0f;
+        float chunkCenterZ = chunk.getChunkZ() * Chunk.CHUNK_SIZE + Chunk.CHUNK_SIZE / 2.0f;
+        
+        float dx = chunkCenterX - camera.getX();
+        float dz = chunkCenterZ - camera.getZ();
+        double distSq = dx * dx + dz * dz;
+        
+        buildQueue.offer(new ChunkBuildTask(chunk, distSq));
+    }
+    
+    /**
+     * ⚡ FIXED: Two-stage update process
+     */
+    public void update() {
+        // Stage 1: Start building mesh data (in worker threads)
+        startMeshDataBuilds();
+        
+        // Stage 2: Upload completed mesh data to GPU (on main thread)
+        uploadPendingMeshes();
+    }
+    
+    /**
+     * Stage 1: Start async mesh data preparation
+     */
+    private void startMeshDataBuilds() {
+        int buildsStarted = 0;
+        
+        // Sort by distance (closest first)
+        List<ChunkBuildTask> sortedTasks = new ArrayList<>();
+        ChunkBuildTask task;
+        while ((task = buildQueue.poll()) != null) {
+            sortedTasks.add(task);
+        }
+        sortedTasks.sort(Comparator.comparingDouble(t -> t.distanceSquared));
+        
+        for (ChunkBuildTask t : sortedTasks) {
+            if (buildsStarted >= MAX_BUILDS_PER_FRAME) {
+                buildQueue.offer(t); // Re-queue for next frame
+                continue;
+            }
+            
+            if (t.chunk.needsRebuild() && !buildingChunks.contains(t.chunk)) {
+                buildingChunks.add(t.chunk);
+                
+                // Build mesh data in worker thread (NO OpenGL calls)
+                meshBuilder.submit(() -> buildMeshDataAsync(t.chunk));
+                buildsStarted++;
+            }
+        }
+    }
+    
+    /**
+     * ⚡ SAFE: Build mesh data (NO OpenGL calls, runs in worker thread)
+     */
+    private void buildMeshDataAsync(Chunk chunk) {
+        try {
+            List<Float> solidVertices = new ArrayList<>();
+            List<Float> waterVertices = new ArrayList<>();
+            List<Float> translucentVertices = new ArrayList<>();
+            
+            int offsetX = chunk.getChunkX() * Chunk.CHUNK_SIZE;
+            int offsetZ = chunk.getChunkZ() * Chunk.CHUNK_SIZE;
+            
+            // Build vertex data (CPU work only, no OpenGL)
+            for (int x = 0; x < Chunk.CHUNK_SIZE; x++) {
+                for (int y = 0; y < Chunk.CHUNK_HEIGHT; y++) {
+                    for (int z = 0; z < Chunk.CHUNK_SIZE; z++) {
+                        Block block = chunk.getBlock(x, y, z);
+                        
+                        if (block != null && !block.isAir()) {
+                            float worldX = offsetX + x;
+                            float worldY = y;
+                            float worldZ = offsetZ + z;
+                            
+                            if (block == Blocks.WATER) {
+                                addWaterBlockToList(chunk, x, y, z, worldX, worldY, worldZ, waterVertices, block);
+                            } else if (block == Blocks.LEAVES) {
+                                addBlockFacesToList(chunk, x, y, z, worldX, worldY, worldZ, translucentVertices, block, false, true);
+                            } else {
+                                addBlockFacesToList(chunk, x, y, z, worldX, worldY, worldZ, solidVertices, block, false, false);
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Queue for VBO creation on main thread
+            pendingVBOCreation.offer(new MeshDataResult(chunk, solidVertices, waterVertices, translucentVertices));
+            
+        } catch (Exception e) {
+            System.err.println("Error building mesh data for chunk: " + e.getMessage());
+            e.printStackTrace();
+        } finally {
+            buildingChunks.remove(chunk);
+        }
+    }
+    
+    /**
+     * Stage 2: Upload mesh data to GPU (MAIN THREAD ONLY)
+     */
+    private void uploadPendingMeshes() {
+        int uploaded = 0;
+        
+        while (uploaded < MAX_VBO_UPLOADS_PER_FRAME && !pendingVBOCreation.isEmpty()) {
+            MeshDataResult result = pendingVBOCreation.poll();
+            
+            if (result != null) {
+                // Create meshes and upload to GPU (OpenGL calls on main thread)
+                ChunkMesh solidMesh = new ChunkMesh();
+                ChunkMesh waterMesh = new ChunkMesh();
+                ChunkMesh translucentMesh = new ChunkMesh();
+                
+                // Add vertices from prepared data
+                for (int i = 0; i < result.solidVertices.size(); i += 12) {
+                    solidMesh.addVertex(
+                        result.solidVertices.get(i), result.solidVertices.get(i+1), result.solidVertices.get(i+2),
+                        result.solidVertices.get(i+3), result.solidVertices.get(i+4), result.solidVertices.get(i+5), result.solidVertices.get(i+6),
+                        result.solidVertices.get(i+7), result.solidVertices.get(i+8), result.solidVertices.get(i+9),
+                        result.solidVertices.get(i+10), result.solidVertices.get(i+11)
+                    );
+                }
+                
+                for (int i = 0; i < result.waterVertices.size(); i += 12) {
+                    waterMesh.addVertex(
+                        result.waterVertices.get(i), result.waterVertices.get(i+1), result.waterVertices.get(i+2),
+                        result.waterVertices.get(i+3), result.waterVertices.get(i+4), result.waterVertices.get(i+5), result.waterVertices.get(i+6),
+                        result.waterVertices.get(i+7), result.waterVertices.get(i+8), result.waterVertices.get(i+9),
+                        result.waterVertices.get(i+10), result.waterVertices.get(i+11)
+                    );
+                }
+                
+                for (int i = 0; i < result.translucentVertices.size(); i += 12) {
+                    translucentMesh.addVertex(
+                        result.translucentVertices.get(i), result.translucentVertices.get(i+1), result.translucentVertices.get(i+2),
+                        result.translucentVertices.get(i+3), result.translucentVertices.get(i+4), result.translucentVertices.get(i+5), result.translucentVertices.get(i+6),
+                        result.translucentVertices.get(i+7), result.translucentVertices.get(i+8), result.translucentVertices.get(i+9),
+                        result.translucentVertices.get(i+10), result.translucentVertices.get(i+11)
+                    );
+                }
+                
+                // Build VBOs (OpenGL calls on main thread - SAFE!)
+                solidMesh.build();
+                waterMesh.build();
+                translucentMesh.build();
+                
+                // Swap old meshes
+                swapMeshes(result.chunk, solidMesh, waterMesh, translucentMesh);
+                
+                result.chunk.setNeedsRebuild(false);
+                uploaded++;
+            }
+        }
+    }
+    
+    private void swapMeshes(Chunk chunk, ChunkMesh newSolid, ChunkMesh newWater, ChunkMesh newTranslucent) {
+        ChunkMesh oldSolid = solidMeshes.put(chunk, newSolid);
+        if (oldSolid != null) oldSolid.destroy();
+        
+        ChunkMesh oldWater = waterMeshes.put(chunk, newWater);
+        if (oldWater != null) oldWater.destroy();
+        
+        ChunkMesh oldTranslucent = translucentMeshes.put(chunk, newTranslucent);
+        if (oldTranslucent != null) oldTranslucent.destroy();
     }
     
     public void renderSolidPass(Collection<Chunk> chunks) {
@@ -117,63 +330,11 @@ public class ChunkRenderer {
         return dx * dx + dz * dz;
     }
     
-    private void buildChunkMesh(Chunk chunk) {
-        ChunkMesh solidMesh = solidMeshes.get(chunk);
-        if (solidMesh == null) {
-            solidMesh = new ChunkMesh();
-            solidMeshes.put(chunk, solidMesh);
-        } else {
-            solidMesh.destroy();
-        }
-        
-        ChunkMesh waterMesh = waterMeshes.get(chunk);
-        if (waterMesh == null) {
-            waterMesh = new ChunkMesh();
-            waterMeshes.put(chunk, waterMesh);
-        } else {
-            waterMesh.destroy();
-        }
-        
-        ChunkMesh translucentMesh = translucentMeshes.get(chunk);
-        if (translucentMesh == null) {
-            translucentMesh = new ChunkMesh();
-            translucentMeshes.put(chunk, translucentMesh);
-        } else {
-            translucentMesh.destroy();
-        }
-        
-        int offsetX = chunk.getChunkX() * Chunk.CHUNK_SIZE;
-        int offsetZ = chunk.getChunkZ() * Chunk.CHUNK_SIZE;
-        
-        for (int x = 0; x < Chunk.CHUNK_SIZE; x++) {
-            for (int y = 0; y < Chunk.CHUNK_HEIGHT; y++) {
-                for (int z = 0; z < Chunk.CHUNK_SIZE; z++) {
-                    Block block = chunk.getBlock(x, y, z);
-                    
-                    if (block != null && !block.isAir()) {
-                        float worldX = offsetX + x;
-                        float worldY = y;
-                        float worldZ = offsetZ + z;
-                        
-                        if (block == Blocks.WATER) {
-                            addWaterBlockFixed(chunk, x, y, z, worldX, worldY, worldZ, waterMesh, block);
-                        } else if (block == Blocks.LEAVES) {
-                            addBlockFaces(chunk, x, y, z, worldX, worldY, worldZ, translucentMesh, block, false, true);
-                        } else {
-                            addBlockFaces(chunk, x, y, z, worldX, worldY, worldZ, solidMesh, block, false, false);
-                        }
-                    }
-                }
-            }
-        }
-        
-        solidMesh.build();
-        waterMesh.build();
-        translucentMesh.build();
-    }
+    // ========== MESH DATA BUILDING (NO OpenGL, thread-safe) ==========
     
-    private void addWaterBlockFixed(Chunk chunk, int x, int y, int z, 
-                                    float worldX, float worldY, float worldZ, ChunkMesh mesh, Block block) {
+    private void addWaterBlockToList(Chunk chunk, int x, int y, int z, 
+                                     float worldX, float worldY, float worldZ, 
+                                     List<Float> vertices, Block block) {
         float[] baseColor = new float[]{0.5f, 0.7f, 1.0f};
         float alpha = 0.7f;
         float topY = worldY + 1.0f;
@@ -186,74 +347,269 @@ public class ChunkRenderer {
         Block west = getBlockSafe(chunk, x - 1, y, z);
         
         SunLightCalculator sunLight = (lightingEngine != null) ? lightingEngine.getSunLight() : null;
-        
         float[] uv = BlockTextures.getUV(block, "top");
         
         if (top != Blocks.WATER) {
             float brightness = getSunBrightness(sunLight, 0, 1, 0);
-            addWaterFace(mesh, 
-                worldX, topY, worldZ,
-                worldX, topY, worldZ + 1,
-                worldX + 1, topY, worldZ + 1,
-                worldX + 1, topY, worldZ,
-                baseColor, alpha, brightness,
-                0, 1, 0, uv);
+            addWaterFaceToList(vertices, 
+                worldX, topY, worldZ, worldX, topY, worldZ + 1,
+                worldX + 1, topY, worldZ + 1, worldX + 1, topY, worldZ,
+                baseColor, alpha, brightness, 0, 1, 0, uv);
         }
         
         if (bottom != null && bottom.isAir()) {
             float brightness = getSunBrightness(sunLight, 0, -1, 0);
-            addWaterFace(mesh,
-                worldX, worldY, worldZ,
-                worldX + 1, worldY, worldZ,
-                worldX + 1, worldY, worldZ + 1,
-                worldX, worldY, worldZ + 1,
-                baseColor, alpha, brightness,
-                0, -1, 0, uv);
+            addWaterFaceToList(vertices,
+                worldX, worldY, worldZ, worldX + 1, worldY, worldZ,
+                worldX + 1, worldY, worldZ + 1, worldX, worldY, worldZ + 1,
+                baseColor, alpha, brightness, 0, -1, 0, uv);
         }
         
         if (north != Blocks.WATER) {
             float brightness = getSunBrightness(sunLight, 0, 0, -1);
-            addWaterFace(mesh,
-                worldX, worldY, worldZ,
-                worldX, worldY + 1, worldZ,
-                worldX + 1, worldY + 1, worldZ,
-                worldX + 1, worldY, worldZ,
-                baseColor, alpha, brightness,
-                0, 0, -1, uv);
+            addWaterFaceToList(vertices,
+                worldX, worldY, worldZ, worldX, worldY + 1, worldZ,
+                worldX + 1, worldY + 1, worldZ, worldX + 1, worldY, worldZ,
+                baseColor, alpha, brightness, 0, 0, -1, uv);
         }
         
         if (south != Blocks.WATER) {
             float brightness = getSunBrightness(sunLight, 0, 0, 1);
-            addWaterFace(mesh,
-                worldX, worldY, worldZ + 1,
-                worldX + 1, worldY, worldZ + 1,
-                worldX + 1, worldY + 1, worldZ + 1,
-                worldX, worldY + 1, worldZ + 1,
-                baseColor, alpha, brightness,
-                0, 0, 1, uv);
+            addWaterFaceToList(vertices,
+                worldX, worldY, worldZ + 1, worldX + 1, worldY, worldZ + 1,
+                worldX + 1, worldY + 1, worldZ + 1, worldX, worldY + 1, worldZ + 1,
+                baseColor, alpha, brightness, 0, 0, 1, uv);
         }
         
         if (east != Blocks.WATER) {
             float brightness = getSunBrightness(sunLight, 1, 0, 0);
-            addWaterFace(mesh,
-                worldX + 1, worldY, worldZ,
-                worldX + 1, worldY + 1, worldZ,
-                worldX + 1, worldY + 1, worldZ + 1,
-                worldX + 1, worldY, worldZ + 1,
-                baseColor, alpha, brightness,
-                1, 0, 0, uv);
+            addWaterFaceToList(vertices,
+                worldX + 1, worldY, worldZ, worldX + 1, worldY + 1, worldZ,
+                worldX + 1, worldY + 1, worldZ + 1, worldX + 1, worldY, worldZ + 1,
+                baseColor, alpha, brightness, 1, 0, 0, uv);
         }
         
         if (west != Blocks.WATER) {
             float brightness = getSunBrightness(sunLight, -1, 0, 0);
-            addWaterFace(mesh,
-                worldX, worldY, worldZ,
-                worldX, worldY, worldZ + 1,
-                worldX, worldY + 1, worldZ + 1,
-                worldX, worldY + 1, worldZ,
-                baseColor, alpha, brightness,
-                -1, 0, 0, uv);
+            addWaterFaceToList(vertices,
+                worldX, worldY, worldZ, worldX, worldY, worldZ + 1,
+                worldX, worldY + 1, worldZ + 1, worldX, worldY + 1, worldZ,
+                baseColor, alpha, brightness, -1, 0, 0, uv);
         }
+    }
+    
+    private void addWaterFaceToList(List<Float> vertices,
+                                    float x1, float y1, float z1, float x2, float y2, float z2,
+                                    float x3, float y3, float z3, float x4, float y4, float z4,
+                                    float[] color, float alpha, float brightness,
+                                    float nx, float ny, float nz, float[] uv) {
+        float r = color[0] * brightness;
+        float g = color[1] * brightness;
+        float b = color[2] * brightness;
+        
+        float u1 = uv[0], v1 = uv[1], u2 = uv[2], v2 = uv[3];
+        
+        addVertexToList(vertices, x1, y1, z1, r, g, b, alpha, nx, ny, nz, u1, v1);
+        addVertexToList(vertices, x2, y2, z2, r, g, b, alpha, nx, ny, nz, u1, v2);
+        addVertexToList(vertices, x3, y3, z3, r, g, b, alpha, nx, ny, nz, u2, v2);
+        addVertexToList(vertices, x4, y4, z4, r, g, b, alpha, nx, ny, nz, u2, v1);
+    }
+    
+    private void addBlockFacesToList(Chunk chunk, int x, int y, int z,
+                                     float worldX, float worldY, float worldZ,
+                                     List<Float> vertices, Block block, boolean isWater, boolean isTranslucent) {
+        float[] color = new float[]{1.0f, 1.0f, 1.0f};
+        float alpha = isTranslucent ? 0.9f : 1.0f;
+        
+        if (shouldRenderFace(chunk, x, y + 1, z, block)) {
+            addTopFaceToList(chunk, vertices, x, y, z, worldX, worldY, worldZ, color, alpha, block);
+        }
+        
+        if (shouldRenderFace(chunk, x, y - 1, z, block)) {
+            addBottomFaceToList(chunk, vertices, x, y, z, worldX, worldY, worldZ, color, alpha, block);
+        }
+        
+        if (shouldRenderFace(chunk, x, y, z - 1, block)) {
+            addNorthFaceToList(chunk, vertices, x, y, z, worldX, worldY, worldZ, color, alpha, block);
+        }
+        
+        if (shouldRenderFace(chunk, x, y, z + 1, block)) {
+            addSouthFaceToList(chunk, vertices, x, y, z, worldX, worldY, worldZ, color, alpha, block);
+        }
+        
+        if (shouldRenderFace(chunk, x + 1, y, z, block)) {
+            addEastFaceToList(chunk, vertices, x, y, z, worldX, worldY, worldZ, color, alpha, block);
+        }
+        
+        if (shouldRenderFace(chunk, x - 1, y, z, block)) {
+            addWestFaceToList(chunk, vertices, x, y, z, worldX, worldY, worldZ, color, alpha, block);
+        }
+    }
+    
+    private void addTopFaceToList(Chunk chunk, List<Float> vertices, int x, int y, int z,
+                                  float worldX, float worldY, float worldZ,
+                                  float[] color, float alpha, Block block) {
+        SunLightCalculator sunLight = (lightingEngine != null) ? lightingEngine.getSunLight() : null;
+        float sunBrightness = getSunBrightness(sunLight, 0, 1, 0);
+        
+        float light1 = getLightBrightness(chunk, x, y + 1, z) * sunBrightness;
+        float light2 = getLightBrightness(chunk, x, y + 1, z + 1) * sunBrightness;
+        float light3 = getLightBrightness(chunk, x + 1, y + 1, z + 1) * sunBrightness;
+        float light4 = getLightBrightness(chunk, x + 1, y + 1, z) * sunBrightness;
+        
+        float[] uv = BlockTextures.getUV(block, "top");
+        float u1 = uv[0], v1 = uv[1], u2 = uv[2], v2 = uv[3];
+        
+        addVertexToList(vertices, worldX, worldY + 1, worldZ, 
+            color[0] * light1, color[1] * light1, color[2] * light1, alpha, 0, 1, 0, u1, v1);
+        addVertexToList(vertices, worldX, worldY + 1, worldZ + 1, 
+            color[0] * light2, color[1] * light2, color[2] * light2, alpha, 0, 1, 0, u1, v2);
+        addVertexToList(vertices, worldX + 1, worldY + 1, worldZ + 1, 
+            color[0] * light3, color[1] * light3, color[2] * light3, alpha, 0, 1, 0, u2, v2);
+        addVertexToList(vertices, worldX + 1, worldY + 1, worldZ, 
+            color[0] * light4, color[1] * light4, color[2] * light4, alpha, 0, 1, 0, u2, v1);
+    }
+    
+    private void addBottomFaceToList(Chunk chunk, List<Float> vertices, int x, int y, int z,
+                                     float worldX, float worldY, float worldZ,
+                                     float[] color, float alpha, Block block) {
+        SunLightCalculator sunLight = (lightingEngine != null) ? lightingEngine.getSunLight() : null;
+        float sunBrightness = getSunBrightness(sunLight, 0, -1, 0);
+        
+        float light1 = getLightBrightness(chunk, x, y - 1, z) * sunBrightness;
+        float light2 = getLightBrightness(chunk, x + 1, y - 1, z) * sunBrightness;
+        float light3 = getLightBrightness(chunk, x + 1, y - 1, z + 1) * sunBrightness;
+        float light4 = getLightBrightness(chunk, x, y - 1, z + 1) * sunBrightness;
+        
+        float[] uv = BlockTextures.getUV(block, "bottom");
+        float u1 = uv[0], v1 = uv[1], u2 = uv[2], v2 = uv[3];
+        
+        addVertexToList(vertices, worldX, worldY, worldZ, 
+            color[0] * light1, color[1] * light1, color[2] * light1, alpha, 0, -1, 0, u1, v1);
+        addVertexToList(vertices, worldX + 1, worldY, worldZ, 
+            color[0] * light2, color[1] * light2, color[2] * light2, alpha, 0, -1, 0, u2, v1);
+        addVertexToList(vertices, worldX + 1, worldY, worldZ + 1, 
+            color[0] * light3, color[1] * light3, color[2] * light3, alpha, 0, -1, 0, u2, v2);
+        addVertexToList(vertices, worldX, worldY, worldZ + 1, 
+            color[0] * light4, color[1] * light4, color[2] * light4, alpha, 0, -1, 0, u1, v2);
+    }
+    
+    private void addNorthFaceToList(Chunk chunk, List<Float> vertices, int x, int y, int z,
+                                    float worldX, float worldY, float worldZ,
+                                    float[] color, float alpha, Block block) {
+        SunLightCalculator sunLight = (lightingEngine != null) ? lightingEngine.getSunLight() : null;
+        float sunBrightness = getSunBrightness(sunLight, 0, 0, -1);
+        
+        float light1 = getLightBrightness(chunk, x, y, z - 1) * sunBrightness;
+        float light2 = getLightBrightness(chunk, x, y + 1, z - 1) * sunBrightness;
+        float light3 = getLightBrightness(chunk, x + 1, y + 1, z - 1) * sunBrightness;
+        float light4 = getLightBrightness(chunk, x + 1, y, z - 1) * sunBrightness;
+        
+        float[] uv = BlockTextures.getUV(block, "north");
+        float u1 = uv[0], v1 = uv[1], u2 = uv[2], v2 = uv[3];
+        
+        addVertexToList(vertices, worldX, worldY, worldZ, 
+            color[0] * light1, color[1] * light1, color[2] * light1, alpha, 0, 0, -1, u1, v2);
+        addVertexToList(vertices, worldX, worldY + 1, worldZ, 
+            color[0] * light2, color[1] * light2, color[2] * light2, alpha, 0, 0, -1, u1, v1);
+        addVertexToList(vertices, worldX + 1, worldY + 1, worldZ, 
+            color[0] * light3, color[1] * light3, color[2] * light3, alpha, 0, 0, -1, u2, v1);
+        addVertexToList(vertices, worldX + 1, worldY, worldZ, 
+            color[0] * light4, color[1] * light4, color[2] * light4, alpha, 0, 0, -1, u2, v2);
+    }
+    
+    private void addSouthFaceToList(Chunk chunk, List<Float> vertices, int x, int y, int z,
+                                    float worldX, float worldY, float worldZ,
+                                    float[] color, float alpha, Block block) {
+        SunLightCalculator sunLight = (lightingEngine != null) ? lightingEngine.getSunLight() : null;
+        float sunBrightness = getSunBrightness(sunLight, 0, 0, 1);
+        
+        float light1 = getLightBrightness(chunk, x, y, z + 1) * sunBrightness;
+        float light2 = getLightBrightness(chunk, x + 1, y, z + 1) * sunBrightness;
+        float light3 = getLightBrightness(chunk, x + 1, y + 1, z + 1) * sunBrightness;
+        float light4 = getLightBrightness(chunk, x, y + 1, z + 1) * sunBrightness;
+        
+        float[] uv = BlockTextures.getUV(block, "south");
+        float u1 = uv[0], v1 = uv[1], u2 = uv[2], v2 = uv[3];
+        
+        addVertexToList(vertices, worldX, worldY, worldZ + 1, 
+            color[0] * light1, color[1] * light1, color[2] * light1, alpha, 0, 0, 1, u1, v2);
+        addVertexToList(vertices, worldX + 1, worldY, worldZ + 1, 
+            color[0] * light2, color[1] * light2, color[2] * light2, alpha, 0, 0, 1, u2, v2);
+        addVertexToList(vertices, worldX + 1, worldY + 1, worldZ + 1, 
+            color[0] * light3, color[1] * light3, color[2] * light3, alpha, 0, 0, 1, u2, v1);
+        addVertexToList(vertices, worldX, worldY + 1, worldZ + 1, 
+            color[0] * light4, color[1] * light4, color[2] * light4, alpha, 0, 0, 1, u1, v1);
+    }
+    
+    private void addEastFaceToList(Chunk chunk, List<Float> vertices, int x, int y, int z,
+                                   float worldX, float worldY, float worldZ,
+                                   float[] color, float alpha, Block block) {
+        SunLightCalculator sunLight = (lightingEngine != null) ? lightingEngine.getSunLight() : null;
+        float sunBrightness = getSunBrightness(sunLight, 1, 0, 0);
+        
+        float light1 = getLightBrightness(chunk, x + 1, y, z) * sunBrightness;
+        float light2 = getLightBrightness(chunk, x + 1, y + 1, z) * sunBrightness;
+        float light3 = getLightBrightness(chunk, x + 1, y + 1, z + 1) * sunBrightness;
+        float light4 = getLightBrightness(chunk, x + 1, y, z + 1) * sunBrightness;
+        
+        float[] uv = BlockTextures.getUV(block, "east");
+        float u1 = uv[0], v1 = uv[1], u2 = uv[2], v2 = uv[3];
+        
+        addVertexToList(vertices, worldX + 1, worldY, worldZ, 
+            color[0] * light1, color[1] * light1, color[2] * light1, alpha, 1, 0, 0, u1, v2);
+        addVertexToList(vertices, worldX + 1, worldY + 1, worldZ, 
+            color[0] * light2, color[1] * light2, color[2] * light2, alpha, 1, 0, 0, u1, v1);
+        addVertexToList(vertices, worldX + 1, worldY + 1, worldZ + 1, 
+            color[0] * light3, color[1] * light3, color[2] * light3, alpha, 1, 0, 0, u2, v1);
+        addVertexToList(vertices, worldX + 1, worldY, worldZ + 1, 
+            color[0] * light4, color[1] * light4, color[2] * light4, alpha, 1, 0, 0, u2, v2);
+    }
+    
+    private void addWestFaceToList(Chunk chunk, List<Float> vertices, int x, int y, int z,
+                                   float worldX, float worldY, float worldZ,
+                                   float[] color, float alpha, Block block) {
+        SunLightCalculator sunLight = (lightingEngine != null) ? lightingEngine.getSunLight() : null;
+        float sunBrightness = getSunBrightness(sunLight, -1, 0, 0);
+        
+        float light1 = getLightBrightness(chunk, x - 1, y, z) * sunBrightness;
+        float light2 = getLightBrightness(chunk, x - 1, y, z + 1) * sunBrightness;
+        float light3 = getLightBrightness(chunk, x - 1, y + 1, z + 1) * sunBrightness;
+        float light4 = getLightBrightness(chunk, x - 1, y + 1, z) * sunBrightness;
+        
+        float[] uv = BlockTextures.getUV(block, "west");
+        float u1 = uv[0], v1 = uv[1], u2 = uv[2], v2 = uv[3];
+        
+        addVertexToList(vertices, worldX, worldY, worldZ, 
+            color[0] * light1, color[1] * light1, color[2] * light1, alpha, -1, 0, 0, u1, v2);
+        addVertexToList(vertices, worldX, worldY, worldZ + 1, 
+            color[0] * light2, color[1] * light2, color[2] * light2, alpha, -1, 0, 0, u2, v2);
+        addVertexToList(vertices, worldX, worldY + 1, worldZ + 1, 
+            color[0] * light3, color[1] * light3, color[2] * light3, alpha, -1, 0, 0, u2, v1);
+        addVertexToList(vertices, worldX, worldY + 1, worldZ, 
+            color[0] * light4, color[1] * light4, color[2] * light4, alpha, -1, 0, 0, u1, v1);
+    }
+    
+    /**
+     * Add single vertex to list (12 floats: pos, color, normal, uv)
+     */
+    private void addVertexToList(List<Float> vertices, 
+                                 float x, float y, float z,
+                                 float r, float g, float b, float a,
+                                 float nx, float ny, float nz,
+                                 float u, float v) {
+        vertices.add(x);
+        vertices.add(y);
+        vertices.add(z);
+        vertices.add(r);
+        vertices.add(g);
+        vertices.add(b);
+        vertices.add(a);
+        vertices.add(nx);
+        vertices.add(ny);
+        vertices.add(nz);
+        vertices.add(u);
+        vertices.add(v);
     }
     
     private float getSunBrightness(SunLightCalculator sunLight, float nx, float ny, float nz) {
@@ -272,25 +628,6 @@ public class ChunkRenderer {
         brightness += Settings.BRIGHTNESS_BOOST;
         
         return Math.max(Settings.MIN_BRIGHTNESS, Math.min(1.0f, brightness));
-    }
-    
-    private void addWaterFace(ChunkMesh mesh,
-                             float x1, float y1, float z1,
-                             float x2, float y2, float z2,
-                             float x3, float y3, float z3,
-                             float x4, float y4, float z4,
-                             float[] color, float alpha, float brightness,
-                             float nx, float ny, float nz, float[] uv) {
-        float r = color[0] * brightness;
-        float g = color[1] * brightness;
-        float b = color[2] * brightness;
-        
-        float u1 = uv[0], v1 = uv[1], u2 = uv[2], v2 = uv[3];
-        
-        mesh.addVertex(x1, y1, z1, r, g, b, alpha, nx, ny, nz, u1, v1);
-        mesh.addVertex(x2, y2, z2, r, g, b, alpha, nx, ny, nz, u1, v2);
-        mesh.addVertex(x3, y3, z3, r, g, b, alpha, nx, ny, nz, u2, v2);
-        mesh.addVertex(x4, y4, z4, r, g, b, alpha, nx, ny, nz, u2, v1);
     }
     
     private Block getBlockSafe(Chunk chunk, int x, int y, int z) {
@@ -340,188 +677,10 @@ public class ChunkRenderer {
         return 15;
     }
     
-    private void addBlockFaces(Chunk chunk, int x, int y, int z,
-                            float worldX, float worldY, float worldZ,
-                            ChunkMesh mesh, Block block, boolean isWater, boolean isTranslucent) {
-        
-        float[] color = new float[]{1.0f, 1.0f, 1.0f};
-        float alpha = isTranslucent ? 0.9f : 1.0f;
-        
-        if (shouldRenderFace(chunk, x, y + 1, z, block)) {
-            addTopFaceWithLighting(chunk, mesh, x, y, z, worldX, worldY, worldZ, color, alpha, block);
-        }
-        
-        if (shouldRenderFace(chunk, x, y - 1, z, block)) {
-            addBottomFaceWithLighting(chunk, mesh, x, y, z, worldX, worldY, worldZ, color, alpha, block);
-        }
-        
-        if (shouldRenderFace(chunk, x, y, z - 1, block)) {
-            addNorthFaceWithLighting(chunk, mesh, x, y, z, worldX, worldY, worldZ, color, alpha, block);
-        }
-        
-        if (shouldRenderFace(chunk, x, y, z + 1, block)) {
-            addSouthFaceWithLighting(chunk, mesh, x, y, z, worldX, worldY, worldZ, color, alpha, block);
-        }
-        
-        if (shouldRenderFace(chunk, x + 1, y, z, block)) {
-            addEastFaceWithLighting(chunk, mesh, x, y, z, worldX, worldY, worldZ, color, alpha, block);
-        }
-        
-        if (shouldRenderFace(chunk, x - 1, y, z, block)) {
-            addWestFaceWithLighting(chunk, mesh, x, y, z, worldX, worldY, worldZ, color, alpha, block);
-        }
-    }
-    
-    private void addTopFaceWithLighting(Chunk chunk, ChunkMesh mesh, int x, int y, int z,
-                                        float worldX, float worldY, float worldZ,
-                                        float[] color, float alpha, Block block) {
-        SunLightCalculator sunLight = (lightingEngine != null) ? lightingEngine.getSunLight() : null;
-        float sunBrightness = getSunBrightness(sunLight, 0, 1, 0);
-        
-        float light1 = getLightBrightness(chunk, x, y + 1, z) * sunBrightness;
-        float light2 = getLightBrightness(chunk, x, y + 1, z + 1) * sunBrightness;
-        float light3 = getLightBrightness(chunk, x + 1, y + 1, z + 1) * sunBrightness;
-        float light4 = getLightBrightness(chunk, x + 1, y + 1, z) * sunBrightness;
-        
-        float[] uv = BlockTextures.getUV(block, "top");
-        float u1 = uv[0], v1 = uv[1], u2 = uv[2], v2 = uv[3];
-        
-        mesh.addVertex(worldX,     worldY + 1, worldZ,     
-            color[0] * light1, color[1] * light1, color[2] * light1, alpha, 0, 1, 0, u1, v1);
-        mesh.addVertex(worldX,     worldY + 1, worldZ + 1, 
-            color[0] * light2, color[1] * light2, color[2] * light2, alpha, 0, 1, 0, u1, v2);
-        mesh.addVertex(worldX + 1, worldY + 1, worldZ + 1, 
-            color[0] * light3, color[1] * light3, color[2] * light3, alpha, 0, 1, 0, u2, v2);
-        mesh.addVertex(worldX + 1, worldY + 1, worldZ,     
-            color[0] * light4, color[1] * light4, color[2] * light4, alpha, 0, 1, 0, u2, v1);
-    }
-    
-    private void addBottomFaceWithLighting(Chunk chunk, ChunkMesh mesh, int x, int y, int z,
-                                           float worldX, float worldY, float worldZ,
-                                           float[] color, float alpha, Block block) {
-        SunLightCalculator sunLight = (lightingEngine != null) ? lightingEngine.getSunLight() : null;
-        float sunBrightness = getSunBrightness(sunLight, 0, -1, 0);
-        
-        float light1 = getLightBrightness(chunk, x, y - 1, z) * sunBrightness;
-        float light2 = getLightBrightness(chunk, x + 1, y - 1, z) * sunBrightness;
-        float light3 = getLightBrightness(chunk, x + 1, y - 1, z + 1) * sunBrightness;
-        float light4 = getLightBrightness(chunk, x, y - 1, z + 1) * sunBrightness;
-        
-        float[] uv = BlockTextures.getUV(block, "bottom");
-        float u1 = uv[0], v1 = uv[1], u2 = uv[2], v2 = uv[3];
-        
-        mesh.addVertex(worldX,     worldY, worldZ,     
-            color[0] * light1, color[1] * light1, color[2] * light1, alpha, 0, -1, 0, u1, v1);
-        mesh.addVertex(worldX + 1, worldY, worldZ,     
-            color[0] * light2, color[1] * light2, color[2] * light2, alpha, 0, -1, 0, u2, v1);
-        mesh.addVertex(worldX + 1, worldY, worldZ + 1, 
-            color[0] * light3, color[1] * light3, color[2] * light3, alpha, 0, -1, 0, u2, v2);
-        mesh.addVertex(worldX,     worldY, worldZ + 1, 
-            color[0] * light4, color[1] * light4, color[2] * light4, alpha, 0, -1, 0, u1, v2);
-    }
-    
-    private void addNorthFaceWithLighting(Chunk chunk, ChunkMesh mesh, int x, int y, int z,
-                                          float worldX, float worldY, float worldZ,
-                                          float[] color, float alpha, Block block) {
-        SunLightCalculator sunLight = (lightingEngine != null) ? lightingEngine.getSunLight() : null;
-        float sunBrightness = getSunBrightness(sunLight, 0, 0, -1);
-        
-        float light1 = getLightBrightness(chunk, x, y, z - 1) * sunBrightness;
-        float light2 = getLightBrightness(chunk, x, y + 1, z - 1) * sunBrightness;
-        float light3 = getLightBrightness(chunk, x + 1, y + 1, z - 1) * sunBrightness;
-        float light4 = getLightBrightness(chunk, x + 1, y, z - 1) * sunBrightness;
-        
-        float[] uv = BlockTextures.getUV(block, "north");
-        float u1 = uv[0], v1 = uv[1], u2 = uv[2], v2 = uv[3];
-        
-        mesh.addVertex(worldX,     worldY,     worldZ, 
-            color[0] * light1, color[1] * light1, color[2] * light1, alpha, 0, 0, -1, u1, v2);
-        mesh.addVertex(worldX,     worldY + 1, worldZ, 
-            color[0] * light2, color[1] * light2, color[2] * light2, alpha, 0, 0, -1, u1, v1);
-        mesh.addVertex(worldX + 1, worldY + 1, worldZ, 
-            color[0] * light3, color[1] * light3, color[2] * light3, alpha, 0, 0, -1, u2, v1);
-        mesh.addVertex(worldX + 1, worldY,     worldZ, 
-            color[0] * light4, color[1] * light4, color[2] * light4, alpha, 0, 0, -1, u2, v2);
-    }
-    
-    private void addSouthFaceWithLighting(Chunk chunk, ChunkMesh mesh, int x, int y, int z,
-                                          float worldX, float worldY, float worldZ,
-                                          float[] color, float alpha, Block block) {
-        SunLightCalculator sunLight = (lightingEngine != null) ? lightingEngine.getSunLight() : null;
-        float sunBrightness = getSunBrightness(sunLight, 0, 0, 1);
-        
-        float light1 = getLightBrightness(chunk, x, y, z + 1) * sunBrightness;
-        float light2 = getLightBrightness(chunk, x + 1, y, z + 1) * sunBrightness;
-        float light3 = getLightBrightness(chunk, x + 1, y + 1, z + 1) * sunBrightness;
-        float light4 = getLightBrightness(chunk, x, y + 1, z + 1) * sunBrightness;
-        
-        float[] uv = BlockTextures.getUV(block, "south");
-        float u1 = uv[0], v1 = uv[1], u2 = uv[2], v2 = uv[3];
-        
-        mesh.addVertex(worldX,     worldY,     worldZ + 1, 
-            color[0] * light1, color[1] * light1, color[2] * light1, alpha, 0, 0, 1, u1, v2);
-        mesh.addVertex(worldX + 1, worldY,     worldZ + 1, 
-            color[0] * light2, color[1] * light2, color[2] * light2, alpha, 0, 0, 1, u2, v2);
-        mesh.addVertex(worldX + 1, worldY + 1, worldZ + 1, 
-            color[0] * light3, color[1] * light3, color[2] * light3, alpha, 0, 0, 1, u2, v1);
-        mesh.addVertex(worldX,     worldY + 1, worldZ + 1, 
-            color[0] * light4, color[1] * light4, color[2] * light4, alpha, 0, 0, 1, u1, v1);
-    }
-    
-    private void addEastFaceWithLighting(Chunk chunk, ChunkMesh mesh, int x, int y, int z,
-                                         float worldX, float worldY, float worldZ,
-                                         float[] color, float alpha, Block block) {
-        SunLightCalculator sunLight = (lightingEngine != null) ? lightingEngine.getSunLight() : null;
-        float sunBrightness = getSunBrightness(sunLight, 1, 0, 0);
-        
-        float light1 = getLightBrightness(chunk, x + 1, y, z) * sunBrightness;
-        float light2 = getLightBrightness(chunk, x + 1, y + 1, z) * sunBrightness;
-        float light3 = getLightBrightness(chunk, x + 1, y + 1, z + 1) * sunBrightness;
-        float light4 = getLightBrightness(chunk, x + 1, y, z + 1) * sunBrightness;
-        
-        float[] uv = BlockTextures.getUV(block, "east");
-        float u1 = uv[0], v1 = uv[1], u2 = uv[2], v2 = uv[3];
-        
-        mesh.addVertex(worldX + 1, worldY,     worldZ,     
-            color[0] * light1, color[1] * light1, color[2] * light1, alpha, 1, 0, 0, u1, v2);
-        mesh.addVertex(worldX + 1, worldY + 1, worldZ,     
-            color[0] * light2, color[1] * light2, color[2] * light2, alpha, 1, 0, 0, u1, v1);
-        mesh.addVertex(worldX + 1, worldY + 1, worldZ + 1, 
-            color[0] * light3, color[1] * light3, color[2] * light3, alpha, 1, 0, 0, u2, v1);
-        mesh.addVertex(worldX + 1, worldY,     worldZ + 1, 
-            color[0] * light4, color[1] * light4, color[2] * light4, alpha, 1, 0, 0, u2, v2);
-    }
-    
-    private void addWestFaceWithLighting(Chunk chunk, ChunkMesh mesh, int x, int y, int z,
-                                         float worldX, float worldY, float worldZ,
-                                         float[] color, float alpha, Block block) {
-        SunLightCalculator sunLight = (lightingEngine != null) ? lightingEngine.getSunLight() : null;
-        float sunBrightness = getSunBrightness(sunLight, -1, 0, 0);
-        
-        float light1 = getLightBrightness(chunk, x - 1, y, z) * sunBrightness;
-        float light2 = getLightBrightness(chunk, x - 1, y, z + 1) * sunBrightness;
-        float light3 = getLightBrightness(chunk, x - 1, y + 1, z + 1) * sunBrightness;
-        float light4 = getLightBrightness(chunk, x - 1, y + 1, z) * sunBrightness;
-        
-        float[] uv = BlockTextures.getUV(block, "west");
-        float u1 = uv[0], v1 = uv[1], u2 = uv[2], v2 = uv[3];
-        
-        mesh.addVertex(worldX, worldY,     worldZ,     
-            color[0] * light1, color[1] * light1, color[2] * light1, alpha, -1, 0, 0, u1, v2);
-        mesh.addVertex(worldX, worldY,     worldZ + 1, 
-            color[0] * light2, color[1] * light2, color[2] * light2, alpha, -1, 0, 0, u2, v2);
-        mesh.addVertex(worldX, worldY + 1, worldZ + 1, 
-            color[0] * light3, color[1] * light3, color[2] * light3, alpha, -1, 0, 0, u2, v1);
-        mesh.addVertex(worldX, worldY + 1, worldZ,     
-            color[0] * light4, color[1] * light4, color[2] * light4, alpha, -1, 0, 0, u1, v1);
-    }
-    
     private float getLightBrightness(Chunk chunk, int x, int y, int z) {
         int light = getLightSafe(chunk, x, y, z);
         float brightness = LightingEngine.getBrightness(light);
-        
         brightness = (float) Math.pow(brightness, 1.0f / Settings.GAMMA);
-        
         return brightness;
     }
     
@@ -540,6 +699,10 @@ public class ChunkRenderer {
     }
     
     public void removeChunk(Chunk chunk) {
+        buildQueue.removeIf(task -> task.chunk == chunk);
+        pendingVBOCreation.removeIf(result -> result.chunk == chunk);
+        buildingChunks.remove(chunk);
+        
         ChunkMesh solidMesh = solidMeshes.remove(chunk);
         if (solidMesh != null) solidMesh.destroy();
         
@@ -551,6 +714,16 @@ public class ChunkRenderer {
     }
     
     public void cleanup() {
+        meshBuilder.shutdown();
+        try {
+            if (!meshBuilder.awaitTermination(3, TimeUnit.SECONDS)) {
+                meshBuilder.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            meshBuilder.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+        
         for (ChunkMesh mesh : solidMeshes.values()) mesh.destroy();
         solidMeshes.clear();
         
@@ -559,5 +732,9 @@ public class ChunkRenderer {
         
         for (ChunkMesh mesh : translucentMeshes.values()) mesh.destroy();
         translucentMeshes.clear();
+    }
+    
+    public int getPendingBuilds() {
+        return buildQueue.size() + buildingChunks.size() + pendingVBOCreation.size();
     }
 }

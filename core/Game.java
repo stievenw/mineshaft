@@ -29,10 +29,9 @@ import static org.lwjgl.opengl.GL11.*;
 import static org.lwjgl.system.MemoryUtil.*;
 
 /**
- * ✅ Main game class - LWJGL 3.3.6 + Java 21 - All warnings fixed
+ * ⚡ OPTIMIZED Game - Async Lighting & Mesh Building
  */
 public class Game {
-    // ✅ GLFW window handle
     private long window;
     
     private boolean running = false;
@@ -47,35 +46,27 @@ public class Game {
     private CommandHandler commandHandler;
     private SkyRenderer skyRenderer;
 
-    // Performance tracking
     private int fps = 0;
     private int tps = 0;
     private int peakFps = 0;
     
-    // Display settings
     private boolean vsyncEnabled = Settings.VSYNC;
     private boolean fullscreen = false;
     private boolean guiVisible = true;
     private boolean pauseOnLostFocus = true;
     
-    // Sky rendering settings
     private boolean renderSky = true;
     
-    // GameMode switching
     private GameMode previousGameMode = GameMode.CREATIVE;
     
-    // Mouse button debouncing
     private boolean leftMousePressed = false;
     private boolean rightMousePressed = false;
     private boolean middleMousePressed = false;
     
-    // Block interaction
     private static final float REACH_DISTANCE = 5.0f;
     
-    // Camera modes (F5)
     private int cameraMode = 0;
     
-    // ✅ Mouse scroll tracking
     private double scrollOffset = 0;
 
     public void start() {
@@ -101,26 +92,19 @@ public class Game {
         }
     }
 
-    /**
-     * ✅ LWJGL 3 - Initialize GLFW Window
-     */
     private void initDisplay() {
-        // Setup error callback
         GLFWErrorCallback.createPrint(System.err).set();
 
-        // Initialize GLFW
         if (!glfwInit()) {
             throw new IllegalStateException("Unable to initialize GLFW");
         }
 
-        // Configure GLFW
         glfwDefaultWindowHints();
         glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
         glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
         glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 2);
         glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
 
-        // Create window
         window = glfwCreateWindow(
             Settings.WINDOW_WIDTH,
             Settings.WINDOW_HEIGHT,
@@ -133,10 +117,8 @@ public class Game {
             throw new RuntimeException("Failed to create GLFW window");
         }
 
-        // Setup callbacks
         setupCallbacks();
 
-        // Center window
         try (MemoryStack stack = MemoryStack.stackPush()) {
             IntBuffer pWidth = stack.mallocInt(1);
             IntBuffer pHeight = stack.mallocInt(1);
@@ -152,44 +134,29 @@ public class Game {
             }
         }
 
-        // Make OpenGL context current
         glfwMakeContextCurrent(window);
-        
-        // Enable v-sync
         glfwSwapInterval(vsyncEnabled ? 1 : 0);
-
-        // Show window
         glfwShowWindow(window);
 
-        // ✅ CRITICAL: Create OpenGL capabilities
         GL.createCapabilities();
 
-        // Capture mouse
         glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 
         System.out.println("Display: " + Settings.WINDOW_WIDTH + "x" + Settings.WINDOW_HEIGHT);
         System.out.println("VSync: " + (vsyncEnabled ? "ON (60 FPS cap)" : "OFF (Unlimited)"));
     }
 
-    /**
-     * ✅ Setup GLFW input callbacks
-     */
     private void setupCallbacks() {
-        // Scroll callback for mouse wheel
         glfwSetScrollCallback(window, (w, xoffset, yoffset) -> {
             scrollOffset += yoffset;
         });
 
-        // Window resize callback
         glfwSetFramebufferSizeCallback(window, (w, width, height) -> {
             glViewport(0, 0, width, height);
             updateProjectionMatrix(width, height);
         });
     }
 
-    /**
-     * ✅ Update projection matrix (replaces GLU.gluPerspective)
-     */
     private void updateProjectionMatrix(int width, int height) {
         float aspect = (float) width / (float) height;
         float fov = Settings.FOV;
@@ -199,7 +166,6 @@ public class Game {
         glMatrixMode(GL_PROJECTION);
         glLoadIdentity();
         
-        // Manual perspective matrix (replaces GLU.gluPerspective)
         float fH = (float) Math.tan(Math.toRadians(fov) / 2) * near;
         float fW = fH * aspect;
         glFrustum(-fW, fW, -fH, fH, near, far);
@@ -224,7 +190,6 @@ public class Game {
 
         glClearColor(0.5f, 0.7f, 1.0f, 1.0f);
 
-        // ✅ CRITICAL: Enable textures BEFORE loading
         glEnable(GL_TEXTURE_2D);
 
         if (Settings.ENABLE_FOG) {
@@ -237,21 +202,13 @@ public class Game {
         System.out.println("OpenGL: " + glGetString(GL_VERSION));
         System.out.println("Renderer: " + glGetString(GL_RENDERER));
         
-        // ✅ CRITICAL: Initialize block textures
         BlockTextures.init();
     }
 
-    /**
-     * ✅ FIXED: Initialize TimeOfDay before World + Pass window to HUD/DebugScreen
-     */
     private void initGame() {
-        // ✅ Step 1: Create TimeOfDay first
         timeOfDay = new TimeOfDay();
-        
-        // ✅ Step 2: Create World with TimeOfDay
         world = new World(timeOfDay);
         
-        // ✅ Step 3: Initialize other components
         camera = new Camera(0, 80, 0, window);
         camera.setWorld(world);
         camera.setGameMode(GameMode.CREATIVE);
@@ -310,9 +267,6 @@ public class Game {
         System.out.println("===============================================");
     }
 
-    /**
-     * ✅ LWJGL 3 game loop - FIXED: Removed dead code warning
-     */
     private void gameLoop() {
         long lastTime = System.nanoTime();
         long timer = System.currentTimeMillis();
@@ -337,7 +291,6 @@ public class Game {
             render();
             frames++;
 
-            // ✅ Swap buffers and poll events
             glfwSwapBuffers(window);
             glfwPollEvents();
 
@@ -368,10 +321,8 @@ public class Game {
     }
 
     /**
-     * ✅ REMOVED: sync() method - VSync handles frame limiting via glfwSwapInterval
-     * No need for manual frame limiting when VSync is enabled
+     * ⚡ OPTIMIZED: Update with lighting engine update
      */
-
     private void update() {
         camera.processInput(1.0f / Settings.TARGET_TPS);
         
@@ -384,6 +335,10 @@ public class Game {
         }
 
         world.updateSunLight();
+        
+        // ⚡ UPDATE LIGHTING ENGINE (smooth transitions)
+        world.getLightingEngine().update();
+        
         skyRenderer.update(1.0f / Settings.TARGET_TPS);
 
         int playerChunkX = (int) Math.floor(camera.getX() / 16);
@@ -391,6 +346,9 @@ public class Game {
         world.updateChunks(playerChunkX, playerChunkZ);
     }
 
+    /**
+     * ⚡ OPTIMIZED: Render with async mesh building update
+     */
     private void render() {
         float[] skyColor = timeOfDay.getSkyColor();
         float[] fogColor = timeOfDay.getFogColor();
@@ -410,7 +368,6 @@ public class Game {
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glLoadIdentity();
 
-        // Apply camera transformation
         if (cameraMode == 0) {
             camera.applyTranslations();
         } else if (cameraMode == 1) {
@@ -425,6 +382,9 @@ public class Game {
 
         glColor3f(1.0f, 1.0f, 1.0f);
         world.render(camera);
+        
+        // ⚡ PROCESS PENDING MESH BUILDS (async, throttled to 3 per frame)
+        world.getRenderer().update();
 
         if (debugScreen.showChunkBorders()) {
             renderChunkBorders();

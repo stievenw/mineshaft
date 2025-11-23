@@ -10,7 +10,7 @@ import com.mineshaft.world.lighting.LightingEngine;
 import java.util.*;
 
 /**
- * ✅ World with SYNCHRONIZED sun lighting
+ * ⚡ OPTIMIZED World with Async Lighting & Mesh Building
  */
 public class World {
     private Map<ChunkPos, Chunk> chunks = new HashMap<>();
@@ -22,9 +22,8 @@ public class World {
     
     private TimeOfDay timeOfDay;
     
-    // ✅ NEW: Rebuild throttling
     private long lastSunRebuildTime = 0;
-    private static final long SUN_REBUILD_INTERVAL_MS = 100; // Rebuild max every 100ms
+    private static final long SUN_REBUILD_INTERVAL_MS = 100;
     
     public World(TimeOfDay timeOfDay) {
         this.timeOfDay = timeOfDay;
@@ -41,6 +40,13 @@ public class World {
     
     public LightingEngine getLightingEngine() {
         return lightingEngine;
+    }
+    
+    /**
+     * ⚡ NEW: Expose renderer for async mesh building
+     */
+    public ChunkRenderer getRenderer() {
+        return renderer;
     }
     
     public Collection<Chunk> getChunks() {
@@ -90,35 +96,34 @@ public class World {
         }
     }
     
+    /**
+     * ⚡ OPTIMIZED: Queue chunks for light update instead of immediate
+     */
     public void updateSkylightForTimeChange() {
         if (timeOfDay == null) return;
         
-        int skylightLevel = timeOfDay.getSkylightLevel();
-        
+        // Queue chunks for gradual update instead of all at once
         for (Chunk chunk : chunks.values()) {
             if (chunk.isGenerated() && chunk.isLightInitialized()) {
-                lightingEngine.initializeSkylightForChunk(chunk, skylightLevel);
-                chunk.setNeedsRebuild(true);
+                lightingEngine.queueChunkForLightUpdate(chunk);
             }
         }
     }
     
     /**
-     * ✅ UPDATED: Rebuild chunks when sun direction changes significantly
+     * ⚡ OPTIMIZED: Throttled sun light updates
      */
     public void updateSunLight() {
         if (lightingEngine != null) {
-            // Update sun direction and check if it changed significantly
             boolean sunDirectionChanged = lightingEngine.updateSunLight();
             
             if (sunDirectionChanged) {
                 long currentTime = System.currentTimeMillis();
                 
-                // ✅ Throttle rebuilds (prevent lag from too frequent updates)
                 if (currentTime - lastSunRebuildTime >= SUN_REBUILD_INTERVAL_MS) {
                     lastSunRebuildTime = currentTime;
                     
-                    // ✅ Rebuild all loaded chunks for updated shadows
+                    // Mark chunks for rebuild (async mesh building will handle it)
                     for (Chunk chunk : chunks.values()) {
                         if (chunk.isGenerated() && chunk.isLightInitialized()) {
                             chunk.setNeedsRebuild(true);
@@ -160,6 +165,9 @@ public class World {
     private void unloadChunk(ChunkPos pos) {
         Chunk chunk = chunks.remove(pos);
         if (chunk != null) {
+            // Cancel any pending lighting updates for this chunk
+            lightingEngine.cancelChunkUpdates(chunk);
+            
             renderer.removeChunk(chunk);
             loadedChunks.remove(pos);
         }
@@ -248,8 +256,17 @@ public class World {
         return chunks.size();
     }
     
+    /**
+     * ⚡ OPTIMIZED: Cleanup with async system shutdown
+     */
     public void cleanup() {
         System.out.println("Cleaning up world (" + chunks.size() + " chunks)...");
+        
+        // Shutdown async systems first
+        if (lightingEngine != null) {
+            lightingEngine.shutdown();
+        }
+        
         renderer.cleanup();
         chunks.clear();
         loadedChunks.clear();

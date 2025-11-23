@@ -5,18 +5,34 @@ import com.mineshaft.block.Blocks;
 import com.mineshaft.core.TimeOfDay;
 import com.mineshaft.world.Chunk;
 
-import java.util.LinkedList;
-import java.util.Queue;
+import java.util.*;
+import java.util.concurrent.*;
 
 /**
- * ✅ Enhanced Lighting Engine - Fixed warnings
+ * ⚡ OPTIMIZED Lighting Engine - Performance Fixed
  */
 public class LightingEngine {
     
-    // ✅ REMOVED: Unused field 'world'
     private SunLightCalculator sunLight;
-    
     private static final float[] BRIGHTNESS_TABLE = new float[16];
+    
+    // ⚡ PERFORMANCE OPTIMIZATIONS
+    private final ExecutorService lightingExecutor;
+    private final Queue<Chunk> pendingLightUpdates = new ConcurrentLinkedQueue<>();
+    private final Set<Chunk> processingChunks = ConcurrentHashMap.newKeySet();
+    
+    // Throttling controls
+    private static final int MAX_CHUNKS_PER_FRAME = 4;
+    private static final int MAX_LIGHT_OPERATIONS_PER_CHUNK = 1000;
+    
+    // Smooth transition
+    private int targetSkylightLevel = 15;
+    private int currentSkylightLevel = 15;
+    private long lastLightLevelChange = 0;
+    private static final long LIGHT_TRANSITION_DELAY = 50; // ms
+    
+    // Cache
+    private final Map<ChunkPosition, Integer> skylightCache = new ConcurrentHashMap<>();
     
     static {
         for (int i = 0; i < 16; i++) {
@@ -43,70 +59,244 @@ public class LightingEngine {
         }
     }
     
+    private static class ChunkPosition {
+        int x, z;
+        
+        ChunkPosition(int x, int z) {
+            this.x = x;
+            this.z = z;
+        }
+        
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof ChunkPosition)) return false;
+            ChunkPosition that = (ChunkPosition) o;
+            return x == that.x && z == that.z;
+        }
+        
+        @Override
+        public int hashCode() {
+            return Objects.hash(x, z);
+        }
+    }
+    
     public LightingEngine(com.mineshaft.world.World world, TimeOfDay timeOfDay) {
-        // ✅ REMOVED: this.world = world; (unused)
         this.sunLight = new SunLightCalculator(timeOfDay);
+        
+        // Create optimized thread pool
+        this.lightingExecutor = Executors.newFixedThreadPool(2, r -> {
+            Thread t = new Thread(r, "LightingWorker");
+            t.setDaemon(true);
+            t.setPriority(Thread.NORM_PRIORITY - 1);
+            return t;
+        });
     }
     
     /**
-     * ✅ Returns true if sun direction changed significantly
+     * ⚡ Update sun light and return true if changed
      */
     public boolean updateSunLight() {
-        return sunLight.updateSunDirection();
+        boolean directionChanged = sunLight.updateSunDirection();
+        
+        // ✅ FIX: Get skylight level from SunLightCalculator
+        targetSkylightLevel = sunLight.getSkylightLevel();
+        
+        return directionChanged;
+    }
+    
+    /**
+     * ⚡ Call every frame for smooth transitions
+     */
+    public void update() {
+        // Smooth light level transition
+        long currentTime = System.currentTimeMillis();
+        if (currentSkylightLevel != targetSkylightLevel && 
+            currentTime - lastLightLevelChange >= LIGHT_TRANSITION_DELAY) {
+            
+            if (currentSkylightLevel < targetSkylightLevel) {
+                currentSkylightLevel++;
+            } else {
+                currentSkylightLevel--;
+            }
+            lastLightLevelChange = currentTime;
+        }
+        
+        // Process queued chunks
+        processQueuedChunks();
+    }
+
+    
+    /**
+     * ⚡ Process limited chunks per frame
+     */
+    private void processQueuedChunks() {
+        int chunksProcessed = 0;
+        
+        while (chunksProcessed < MAX_CHUNKS_PER_FRAME && !pendingLightUpdates.isEmpty()) {
+            Chunk chunk = pendingLightUpdates.poll();
+            
+            if (chunk == null || processingChunks.contains(chunk)) {
+                continue;
+            }
+            
+            processingChunks.add(chunk);
+            
+            // Process async
+            lightingExecutor.submit(() -> {
+                try {
+                    updateChunkSkylightAsync(chunk, currentSkylightLevel);
+                } finally {
+                    processingChunks.remove(chunk);
+                }
+            });
+            
+            chunksProcessed++;
+        }
+    }
+    
+    /**
+     * ⚡ Async chunk skylight update
+     */
+    private void updateChunkSkylightAsync(Chunk chunk, int skylightLevel) {
+        if (chunk == null) return;
+        
+        ChunkPosition pos = new ChunkPosition(chunk.getChunkX(), chunk.getChunkZ());
+        
+        // Check cache
+        Integer cachedLevel = skylightCache.get(pos);
+        if (cachedLevel != null && cachedLevel == skylightLevel) {
+            return;
+        }
+        
+        // Update skylight
+        boolean changed = false;
+        for (int x = 0; x < Chunk.CHUNK_SIZE; x++) {
+            for (int z = 0; z < Chunk.CHUNK_SIZE; z++) {
+                if (updateColumnSkylight(chunk, x, z, skylightLevel)) {
+                    changed = true;
+                }
+            }
+        }
+        
+        if (changed) {
+            skylightCache.put(pos, skylightLevel);
+            chunk.setNeedsRebuild(true);
+        }
+    }
+    
+    /**
+     * ⚡ Update single column
+     */
+    private boolean updateColumnSkylight(Chunk chunk, int x, int z, int skylightLevel) {
+        int currentLight = skylightLevel;
+        boolean changed = false;
+        
+        for (int y = Chunk.CHUNK_HEIGHT - 1; y >= 0; y--) {
+            Block block = chunk.getBlock(x, y, z);
+            int newLight;
+            
+            if (block == null || block.isAir() || !block.isSolid()) {
+                newLight = currentLight;
+            } else {
+                newLight = 0;
+                currentLight = 0;
+            }
+            
+            int oldLight = chunk.getSkyLight(x, y, z);
+            if (oldLight != newLight) {
+                chunk.setSkyLight(x, y, z, newLight);
+                changed = true;
+            }
+        }
+        
+        return changed;
+    }
+    
+    /**
+     * ⚡ Queue chunk for update
+     */
+    public void queueChunkForLightUpdate(Chunk chunk) {
+        if (chunk != null && !processingChunks.contains(chunk)) {
+            pendingLightUpdates.offer(chunk);
+        }
+    }
+    
+    /**
+     * ⚡ Batch queue chunks
+     */
+    public void queueChunksForLightUpdate(Collection<Chunk> chunks) {
+        for (Chunk chunk : chunks) {
+            queueChunkForLightUpdate(chunk);
+        }
     }
     
     public SunLightCalculator getSunLight() {
         return sunLight;
     }
     
+    public int getCurrentSkylightLevel() {
+        return currentSkylightLevel;
+    }
+    
+    /**
+     * ⚡ Initial skylight setup
+     */
     public void initializeSkylightForChunk(Chunk chunk, int skylightLevel) {
-        for (int x = 0; x < Chunk.CHUNK_SIZE; x++) {
-            for (int z = 0; z < Chunk.CHUNK_SIZE; z++) {
-                int currentLight = skylightLevel;
-                
-                for (int y = Chunk.CHUNK_HEIGHT - 1; y >= 0; y--) {
-                    Block block = chunk.getBlock(x, y, z);
-                    
-                    if (block == null || block.isAir() || !block.isSolid()) {
-                        chunk.setSkyLight(x, y, z, currentLight);
-                    } else {
-                        chunk.setSkyLight(x, y, z, 0);
-                        currentLight = 0;
-                    }
-                }
-            }
-        }
-    }
-    
-    public void initializeBlocklightForChunk(Chunk chunk) {
-        Queue<LightNode> lightQueue = new LinkedList<>();
-        
-        for (int x = 0; x < Chunk.CHUNK_SIZE; x++) {
-            for (int y = 0; y < Chunk.CHUNK_HEIGHT; y++) {
+        lightingExecutor.submit(() -> {
+            for (int x = 0; x < Chunk.CHUNK_SIZE; x++) {
                 for (int z = 0; z < Chunk.CHUNK_SIZE; z++) {
-                    Block block = chunk.getBlock(x, y, z);
-                    int lightLevel = (block != null) ? block.getLightLevel() : 0;
-                    
-                    if (lightLevel > 0) {
-                        chunk.setBlockLight(x, y, z, lightLevel);
-                        lightQueue.add(new LightNode(x, y, z, lightLevel));
+                    updateColumnSkylight(chunk, x, z, skylightLevel);
+                }
+            }
+        });
+    }
+    
+    /**
+     * ⚡ Blocklight initialization
+     */
+    public void initializeBlocklightForChunk(Chunk chunk) {
+        lightingExecutor.submit(() -> {
+            Queue<LightNode> lightQueue = new LinkedList<>();
+            
+            for (int x = 0; x < Chunk.CHUNK_SIZE; x++) {
+                for (int y = 0; y < Chunk.CHUNK_HEIGHT; y++) {
+                    for (int z = 0; z < Chunk.CHUNK_SIZE; z++) {
+                        Block block = chunk.getBlock(x, y, z);
+                        int lightLevel = (block != null) ? block.getLightLevel() : 0;
+                        
+                        if (lightLevel > 0) {
+                            chunk.setBlockLight(x, y, z, lightLevel);
+                            lightQueue.add(new LightNode(x, y, z, lightLevel));
+                        }
                     }
                 }
             }
-        }
-        
-        propagateLight(chunk, lightQueue, false);
+            
+            propagateLightOptimized(chunk, lightQueue, false);
+        });
     }
     
-    private void propagateLight(Chunk chunk, Queue<LightNode> queue, boolean isSkylight) {
+    /**
+     * ⚡ OPTIMIZED: Light propagation with operation limit
+     */
+    private void propagateLightOptimized(Chunk chunk, Queue<LightNode> queue, boolean isSkylight) {
         int[][] directions = {
             {1, 0, 0}, {-1, 0, 0},
             {0, 1, 0}, {0, -1, 0},
             {0, 0, 1}, {0, 0, -1}
         };
         
-        while (!queue.isEmpty()) {
+        Set<Long> visited = new HashSet<>();
+        int operations = 0;
+        
+        while (!queue.isEmpty() && operations < MAX_LIGHT_OPERATIONS_PER_CHUNK) {
             LightNode node = queue.poll();
+            long key = ((long)node.x << 16) | ((long)node.y << 8) | node.z;
+            
+            if (visited.contains(key)) continue;
+            visited.add(key);
+            operations++; // ✅ FIX: Now operations is actually used
             
             int newLight = node.lightLevel - 1;
             if (newLight <= 0) continue;
@@ -121,6 +311,9 @@ public class LightingEngine {
                     nz < 0 || nz >= Chunk.CHUNK_SIZE) {
                     continue;
                 }
+                
+                long neighborKey = ((long)nx << 16) | ((long)ny << 8) | nz;
+                if (visited.contains(neighborKey)) continue;
                 
                 Block neighbor = chunk.getBlock(nx, ny, nz);
                 
@@ -144,54 +337,53 @@ public class LightingEngine {
         }
     }
     
+    /**
+     * ⚡ Block placement
+     */
     public void onBlockPlaced(Chunk chunk, int x, int y, int z, Block block) {
-        if (block.isSolid()) {
-            chunk.setSkyLight(x, y, z, 0);
-            propagateDarknessDown(chunk, x, y, z);
-        }
-        
-        int lightLevel = block.getLightLevel();
-        if (lightLevel > 0) {
-            chunk.setBlockLight(x, y, z, lightLevel);
-            Queue<LightNode> queue = new LinkedList<>();
-            queue.add(new LightNode(x, y, z, lightLevel));
-            propagateLight(chunk, queue, false);
-        }
-        
-        chunk.setNeedsRebuild(true);
-    }
-    
-    public void onBlockRemoved(Chunk chunk, int x, int y, int z) {
-        recalculateSkylightColumn(chunk, x, z);
-        chunk.setBlockLight(x, y, z, 0);
-        recalculateBlocklightAround(chunk, x, y, z);
-        chunk.setNeedsRebuild(true);
-    }
-    
-    private void recalculateSkylightColumn(Chunk chunk, int x, int z) {
-        int skylightLevel = 15;
-        
-        for (int y = Chunk.CHUNK_HEIGHT - 1; y >= 0; y--) {
-            Block block = chunk.getBlock(x, y, z);
-            
-            if (block == null || block.isAir() || !block.isSolid()) {
-                chunk.setSkyLight(x, y, z, skylightLevel);
-            } else {
+        lightingExecutor.submit(() -> {
+            if (block.isSolid()) {
                 chunk.setSkyLight(x, y, z, 0);
-                skylightLevel = 0;
+                propagateDarknessDownOptimized(chunk, x, y, z);
             }
-        }
+            
+            int lightLevel = block.getLightLevel();
+            if (lightLevel > 0) {
+                chunk.setBlockLight(x, y, z, lightLevel);
+                Queue<LightNode> queue = new LinkedList<>();
+                queue.add(new LightNode(x, y, z, lightLevel));
+                propagateLightOptimized(chunk, queue, false);
+            }
+            
+            chunk.setNeedsRebuild(true);
+        });
     }
     
-    private void propagateDarknessDown(Chunk chunk, int x, int startY, int z) {
+    /**
+     * ⚡ Block removal
+     */
+    public void onBlockRemoved(Chunk chunk, int x, int y, int z) {
+        lightingExecutor.submit(() -> {
+            updateColumnSkylight(chunk, x, z, currentSkylightLevel);
+            chunk.setBlockLight(x, y, z, 0);
+            recalculateBlocklightAroundOptimized(chunk, x, y, z);
+            chunk.setNeedsRebuild(true);
+        });
+    }
+    
+    private void propagateDarknessDownOptimized(Chunk chunk, int x, int startY, int z) {
         for (int y = startY - 1; y >= 0; y--) {
             Block block = chunk.getBlock(x, y, z);
             if (block != null && block.isSolid()) break;
+            
+            int currentLight = chunk.getSkyLight(x, y, z);
+            if (currentLight == 0) break;
+            
             chunk.setSkyLight(x, y, z, 0);
         }
     }
     
-    private void recalculateBlocklightAround(Chunk chunk, int x, int y, int z) {
+    private void recalculateBlocklightAroundOptimized(Chunk chunk, int x, int y, int z) {
         Queue<LightNode> queue = new LinkedList<>();
         
         int[][] directions = {
@@ -212,12 +404,12 @@ public class LightingEngine {
             }
             
             int light = chunk.getBlockLight(nx, ny, nz);
-            if (light > 0) {
+            if (light > 1) {
                 queue.add(new LightNode(nx, ny, nz, light));
             }
         }
         
-        propagateLight(chunk, queue, false);
+        propagateLightOptimized(chunk, queue, false);
     }
     
     public static int getCombinedLight(Chunk chunk, int x, int y, int z) {
@@ -238,5 +430,38 @@ public class LightingEngine {
     public static float getBrightnessWithGamma(int lightLevel, float gamma) {
         float brightness = getBrightness(lightLevel);
         return (float) Math.pow(brightness, 1.0f / gamma);
+    }
+    
+    public void cancelChunkUpdates(Chunk chunk) {
+        pendingLightUpdates.remove(chunk);
+        processingChunks.remove(chunk);
+        ChunkPosition pos = new ChunkPosition(chunk.getChunkX(), chunk.getChunkZ());
+        skylightCache.remove(pos);
+    }
+    
+    public int getPendingUpdatesCount() {
+        return pendingLightUpdates.size() + processingChunks.size();
+    }
+    
+    public void flush() {
+        while (!pendingLightUpdates.isEmpty()) {
+            processQueuedChunks();
+        }
+    }
+    
+    public void shutdown() {
+        lightingExecutor.shutdown();
+        try {
+            if (!lightingExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                lightingExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            lightingExecutor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+        
+        pendingLightUpdates.clear();
+        processingChunks.clear();
+        skylightCache.clear();
     }
 }
