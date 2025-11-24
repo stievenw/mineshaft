@@ -1,5 +1,6 @@
 package com.mineshaft.core;
 
+import com.mineshaft.block.Block;
 import com.mineshaft.entity.Camera;
 import com.mineshaft.input.InputHandler;
 import com.mineshaft.player.Inventory;
@@ -9,13 +10,13 @@ import com.mineshaft.render.ChatOverlay;
 import com.mineshaft.render.DebugScreen;
 import com.mineshaft.render.HUD;
 import com.mineshaft.render.SkyRenderer;
+import com.mineshaft.render.BlockOutlineRenderer;
 import com.mineshaft.render.TextureManager;
 import com.mineshaft.util.Screenshot;
 import com.mineshaft.world.GameMode;
 import com.mineshaft.world.RayCast;
 import com.mineshaft.world.World;
-import com.mineshaft.block.Block;
-import com.mineshaft.block.Blocks;
+import com.mineshaft.world.interaction.BlockInteractionHandler;
 
 import org.lwjgl.BufferUtils;
 import org.lwjgl.glfw.*;
@@ -30,11 +31,11 @@ import static org.lwjgl.opengl.GL11.*;
 import static org.lwjgl.system.MemoryUtil.*;
 
 /**
- * ✅ FIXED - Smooth mouse & flying movement (every frame)
+ * ✅ Main game class with smooth mouse & flying movement
  */
 public class Game {
     private long window;
-    
+
     private boolean running = false;
     private World world;
     private Player player;
@@ -47,28 +48,26 @@ public class Game {
     private ChatOverlay chatOverlay;
     private CommandHandler commandHandler;
     private SkyRenderer skyRenderer;
+    private BlockInteractionHandler interactionHandler;
+    private BlockOutlineRenderer outlineRenderer;
 
     private int fps = 0;
     private int tps = 0;
     private int peakFps = 0;
-    
+
     private boolean vsyncEnabled = Settings.VSYNC;
     private boolean fullscreen = false;
     private boolean guiVisible = true;
     private boolean pauseOnLostFocus = true;
-    
+
     private boolean renderSky = true;
-    
+
     private GameMode previousGameMode = GameMode.CREATIVE;
-    
-    private boolean leftMousePressed = false;
-    private boolean rightMousePressed = false;
-    private boolean middleMousePressed = false;
-    
+
     private static final float REACH_DISTANCE = 5.0f;
-    
+
     private int cameraMode = 0;
-    
+
     private double scrollOffset = 0;
 
     public void start() {
@@ -77,11 +76,11 @@ public class Game {
             System.out.println("   MINESHAFT - Minecraft-style Voxel Engine");
             System.out.println("   " + Settings.VERSION);
             System.out.println("===============================================");
-            
+
             initDisplay();
             initGL();
             initGame();
-            
+
             System.out.println("Game initialized successfully");
             System.out.println("===============================================");
             running = true;
@@ -109,12 +108,11 @@ public class Game {
         glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
 
         window = glfwCreateWindow(
-            Settings.WINDOW_WIDTH,
-            Settings.WINDOW_HEIGHT,
-            Settings.FULL_TITLE,
-            NULL,
-            NULL
-        );
+                Settings.WINDOW_WIDTH,
+                Settings.WINDOW_HEIGHT,
+                Settings.FULL_TITLE,
+                NULL,
+                NULL);
 
         if (window == NULL) {
             throw new RuntimeException("Failed to create GLFW window");
@@ -126,14 +124,13 @@ public class Game {
             IntBuffer pWidth = stack.mallocInt(1);
             IntBuffer pHeight = stack.mallocInt(1);
             glfwGetWindowSize(window, pWidth, pHeight);
-            
+
             GLFWVidMode vidmode = glfwGetVideoMode(glfwGetPrimaryMonitor());
             if (vidmode != null) {
                 glfwSetWindowPos(
-                    window,
-                    (vidmode.width() - pWidth.get(0)) / 2,
-                    (vidmode.height() - pHeight.get(0)) / 2
-                );
+                        window,
+                        (vidmode.width() - pWidth.get(0)) / 2,
+                        (vidmode.height() - pHeight.get(0)) / 2);
             }
         }
 
@@ -159,7 +156,7 @@ public class Game {
         glfwSetFramebufferSizeCallback(window, (w, width, height) -> {
             glViewport(0, 0, width, height);
             updateProjectionMatrix(width, height);
-            
+
             if (chatOverlay != null) {
                 chatOverlay.updateSize(width, height);
             }
@@ -174,11 +171,11 @@ public class Game {
 
         glMatrixMode(GL_PROJECTION);
         glLoadIdentity();
-        
+
         float fH = (float) Math.tan(Math.toRadians(fov) / 2) * near;
         float fW = fH * aspect;
         glFrustum(-fW, fW, -fH, fH, near, far);
-        
+
         glMatrixMode(GL_MODELVIEW);
     }
 
@@ -210,28 +207,34 @@ public class Game {
 
         System.out.println("OpenGL: " + glGetString(GL_VERSION));
         System.out.println("Renderer: " + glGetString(GL_RENDERER));
-        
+
         BlockTextures.init();
     }
 
     private void initGame() {
         timeOfDay = new TimeOfDay();
         world = new World(timeOfDay);
-        
+
         player = new Player(world, window);
         player.setPosition(0, 80, 0);
         player.setGameMode(GameMode.CREATIVE);
-        
+
         camera = new Camera(player, window);
-        
+
         inventory = player.getInventory();
         hud = new HUD(window);
         debugScreen = new DebugScreen(window);
         input = new InputHandler(window);
-        
+
         chatOverlay = new ChatOverlay(window);
         commandHandler = new CommandHandler(world, player, timeOfDay, chatOverlay);
-        
+
+        // Initialize block interaction system
+        interactionHandler = new BlockInteractionHandler(world, player, camera, REACH_DISTANCE);
+
+        // Initialize block outline renderer
+        outlineRenderer = new BlockOutlineRenderer();
+
         skyRenderer = new SkyRenderer(timeOfDay);
     }
 
@@ -252,7 +255,7 @@ public class Game {
         while (running && !glfwWindowShouldClose(window)) {
             long now = System.nanoTime();
             delta += (now - lastTime) / nsPerTick;
-            
+
             // ✅ Calculate frame delta for smooth movement
             float frameDelta = (now - lastFrameTime) / 1000000000.0f;
             lastFrameTime = now;
@@ -270,13 +273,16 @@ public class Game {
                 player.processMovementInput(frameDelta);
             }
 
+            // Update block interaction cooldowns
+            interactionHandler.update(frameDelta);
+
             // ✅ Render every frame
-            render();
+            render(frameDelta); // ✅ Pass frameDelta for animations
             frames++;
 
             glfwSwapBuffers(window);
             glfwPollEvents();
-            
+
             input.update();
             handleInput();
 
@@ -285,15 +291,17 @@ public class Game {
                 timer += 1000;
                 fps = frames;
                 tps = ticks;
-                
-                if (fps > peakFps) peakFps = fps;
+
+                if (fps > peakFps)
+                    peakFps = fps;
 
                 if (Settings.SHOW_FPS && !debugScreen.isVisible()) {
                     glfwSetWindowTitle(window, String.format(
-                        "%s | FPS: %d | TPS: %d",
-                        Settings.FULL_TITLE,
-                        fps,
-                        tps
+                            "%s | FPS: %d | TPS: %d | Camera: %s",
+                            Settings.FULL_TITLE,
+                            fps,
+                            tps,
+                            getCameraModeName() // ✅ Show camera mode
                     ));
                 }
 
@@ -308,11 +316,11 @@ public class Game {
      */
     private void updatePhysics() {
         player.tick();
-        
+
         int oldSkylight = timeOfDay.getSkylightLevel();
         timeOfDay.update();
         int newSkylight = timeOfDay.getSkylightLevel();
-        
+
         if (oldSkylight != newSkylight) {
             world.updateSkylightForTimeChange();
         }
@@ -326,14 +334,14 @@ public class Game {
         world.updateChunks(playerChunkX, playerChunkZ);
     }
 
-    private void render() {
+    private void render(float partialTicks) {
         float[] skyColor = timeOfDay.getSkyColor();
         float[] fogColor = timeOfDay.getFogColor();
-        
+
         glClearColor(skyColor[0], skyColor[1], skyColor[2], 1.0f);
-        
+
         if (Settings.ENABLE_FOG) {
-            FloatBuffer fogColorBuffer = BufferUtils.createFloatBuffer(4);
+            FloatBuffer fogColorBuffer = BufferUtils.createByteBuffer(16).asFloatBuffer();
             fogColorBuffer.put(fogColor[0]);
             fogColorBuffer.put(fogColor[1]);
             fogColorBuffer.put(fogColor[2]);
@@ -345,6 +353,7 @@ public class Game {
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glLoadIdentity();
 
+        // ✅ Apply camera transformations
         if (cameraMode == 0) {
             camera.applyTranslations();
         } else if (cameraMode == 1) {
@@ -353,21 +362,31 @@ public class Game {
             applyThirdPersonCamera(-4.0f);
         }
 
+        // Render sky
         if (renderSky) {
             skyRenderer.renderSky(player.getX(), player.getY(), player.getZ());
         }
 
+        // Render world
         glColor3f(1.0f, 1.0f, 1.0f);
         world.render(camera);
         world.getRenderer().update();
 
+        // Render chunk borders (debug)
         if (debugScreen.showChunkBorders()) {
             renderChunkBorders();
         }
 
+        // Render block selection outline
+        if (player.getGameMode() != GameMode.SPECTATOR) {
+            renderBlockOutline();
+        }
+
+        // Apply underwater effect
         glColor3f(1.0f, 1.0f, 1.0f);
         camera.applyUnderwaterEffect();
 
+        // Render GUI
         if (guiVisible) {
             hud.render(inventory.getSelectedSlot());
         }
@@ -375,35 +394,36 @@ public class Game {
         debugScreen.render(camera, world, player.getGameMode(), fps, tps, vsyncEnabled);
         chatOverlay.render();
     }
-    
+
     private void applyThirdPersonCamera(float distance) {
+        // 1. Move camera back by distance
+        glTranslatef(0, 0, -Math.abs(distance));
+
+        // 2. Rotate camera to match player view
         glRotatef(player.getPitch(), 1, 0, 0);
-        glRotatef(player.getYaw(), 0, 1, 0);
-        
-        float yawRad = (float) Math.toRadians(player.getYaw());
-        float pitchRad = (float) Math.toRadians(player.getPitch());
-        
-        float offsetX = (float) (Math.sin(yawRad) * Math.cos(pitchRad) * distance);
-        float offsetY = (float) (-Math.sin(pitchRad) * distance);
-        float offsetZ = (float) (-Math.cos(yawRad) * Math.cos(pitchRad) * distance);
-        
-        glTranslatef(-player.getX() - offsetX, -player.getEyeY() - offsetY, -player.getZ() - offsetZ);
+        // If front view (distance < 0), rotate 180 degrees to look at face
+        // Back view (distance > 0) should have 0 offset
+        float yawOffset = (distance < 0) ? 180.0f : 0.0f;
+        glRotatef(player.getYaw() + yawOffset, 0, 1, 0);
+
+        // 3. Move camera to player position (eye level)
+        glTranslatef(-player.getX(), -player.getEyeY(), -player.getZ());
     }
-    
+
     private void renderChunkBorders() {
         glDisable(GL_TEXTURE_2D);
         glDisable(GL_LIGHTING);
         glLineWidth(2.0f);
         glColor3f(0, 0, 1);
-        
+
         int px = (int) player.getX();
         int pz = (int) player.getZ();
-        
+
         for (int cx = -2; cx <= 2; cx++) {
             for (int cz = -2; cz <= 2; cz++) {
                 int chunkX = (px / 16 + cx) * 16;
                 int chunkZ = (pz / 16 + cz) * 16;
-                
+
                 glBegin(GL_LINES);
                 for (int i = 0; i <= 16; i += 16) {
                     for (int j = 0; j <= 16; j += 16) {
@@ -414,9 +434,29 @@ public class Game {
                 glEnd();
             }
         }
-        
+
         glLineWidth(1.0f);
         glEnable(GL_TEXTURE_2D);
+    }
+
+    /**
+     * Render outline around the block being targeted by the crosshair.
+     */
+    private void renderBlockOutline() {
+        // Cast ray to find targeted block
+        float[] dir = camera.getForwardVector();
+        RayCast.RayResult ray = RayCast.cast(
+                world,
+                player.getX(),
+                player.getEyeY(),
+                player.getZ(),
+                dir[0], dir[1], dir[2],
+                REACH_DISTANCE);
+
+        // Render outline if block found
+        if (ray.hit) {
+            outlineRenderer.render(ray.x, ray.y, ray.z);
+        }
     }
 
     private void handleInput() {
@@ -425,107 +465,113 @@ public class Game {
             commandHandler.executeCommand(chatMessage);
             return;
         }
-        
+
         if (chatOverlay.isChatOpen()) {
-            return; 
+            return;
         }
-        
+
         if (input.isKeyPressed(GLFW_KEY_ESCAPE)) {
             running = false;
         }
-        
+
         if (input.isKeyPressed(GLFW_KEY_F3)) {
-            boolean hasCombination = 
-                input.isKeyDown(GLFW_KEY_Q) ||
-                input.isKeyDown(GLFW_KEY_A) ||
-                input.isKeyDown(GLFW_KEY_B) ||
-                input.isKeyDown(GLFW_KEY_C) ||
-                input.isKeyDown(GLFW_KEY_G) ||
-                input.isKeyDown(GLFW_KEY_N) ||
-                input.isKeyDown(GLFW_KEY_P) ||
-                input.isKeyDown(GLFW_KEY_S);
-            
+            boolean hasCombination = input.isKeyDown(GLFW_KEY_Q) ||
+                    input.isKeyDown(GLFW_KEY_A) ||
+                    input.isKeyDown(GLFW_KEY_B) ||
+                    input.isKeyDown(GLFW_KEY_C) ||
+                    input.isKeyDown(GLFW_KEY_G) ||
+                    input.isKeyDown(GLFW_KEY_N) ||
+                    input.isKeyDown(GLFW_KEY_P) ||
+                    input.isKeyDown(GLFW_KEY_S);
+
             if (!hasCombination) {
                 debugScreen.toggle();
             }
         }
-        
+
         if (input.isKeyDown(GLFW_KEY_F3)) {
             handleF3Combinations();
         }
-        
+
         if (!input.isKeyDown(GLFW_KEY_F3)) {
             if (input.isKeyPressed(GLFW_KEY_F1)) {
                 guiVisible = !guiVisible;
             }
-            
+
             if (input.isKeyPressed(GLFW_KEY_F2)) {
                 Screenshot.takeScreenshot(window);
             }
-            
+
             if (input.isKeyPressed(GLFW_KEY_F4)) {
                 cycleGameMode(1);
             }
-            
+
             if (input.isKeyPressed(GLFW_KEY_F5)) {
                 cameraMode = (cameraMode + 1) % 3;
+                System.out.println("Camera mode: " + getCameraModeName());
             }
-            
+
             if (input.isKeyPressed(GLFW_KEY_F11)) {
                 toggleFullscreen();
             }
         }
-        
+
         if (input.isKeyPressed(GLFW_KEY_V) && !input.isKeyDown(GLFW_KEY_F3)) {
             vsyncEnabled = !vsyncEnabled;
             glfwSwapInterval(vsyncEnabled ? 1 : 0);
         }
-        
+
         if (input.isKeyPressed(GLFW_KEY_F) && !input.isKeyDown(GLFW_KEY_F3)) {
             player.toggleFlying();
         }
-        
+
         for (int i = 0; i < 9; i++) {
             if (input.isKeyPressed(GLFW_KEY_1 + i)) {
                 inventory.selectSlot(i);
             }
         }
-        
+
         int dwheel = getScrollDelta();
         if (dwheel > 0) {
             inventory.prevSlot();
         } else if (dwheel < 0) {
             inventory.nextSlot();
         }
-        
-        if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS) {
-            if (!leftMousePressed && player.getGameMode() != GameMode.SPECTATOR) {
-                breakBlock();
-                leftMousePressed = true;
-            }
-        } else {
-            leftMousePressed = false;
+
+        // Block breaking - hold left mouse to continuously break
+        if (player.getGameMode() != GameMode.SPECTATOR) {
+            boolean leftMouseHeld = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+            interactionHandler.handleBreakInput(leftMouseHeld);
         }
-        
-        if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS) {
-            if (!rightMousePressed && player.getGameMode() != GameMode.SPECTATOR) {
-                placeBlock();
-                rightMousePressed = true;
-            }
-        } else {
-            rightMousePressed = false;
+
+        // Block placing - hold right mouse to continuously place
+        if (player.getGameMode() != GameMode.SPECTATOR) {
+            boolean rightMouseHeld = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+            Block selectedBlock = inventory.getSelectedBlock();
+            interactionHandler.handlePlaceInput(rightMouseHeld, selectedBlock);
         }
-        
+
+        // Middle mouse - pick block
         if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS) {
-            if (!middleMousePressed) {
-                pickBlock();
-                middleMousePressed = true;
+            // Simple pick block (not hold-based, just on click)
+            float[] dir = camera.getForwardVector();
+            RayCast.RayResult ray = RayCast.cast(
+                    world,
+                    player.getX(),
+                    player.getEyeY(),
+                    player.getZ(),
+                    dir[0], dir[1], dir[2],
+                    REACH_DISTANCE);
+
+            if (ray.hit) {
+                Block block = world.getBlock(ray.x, ray.y, ray.z);
+                if (block != null && !block.isAir()) {
+                    inventory.setSlot(inventory.getSelectedSlot(), block);
+                }
             }
-        } else {
-            middleMousePressed = false;
         }
     }
-    
+
     private int getScrollDelta() {
         int delta = 0;
         if (scrollOffset > 0) {
@@ -537,46 +583,46 @@ public class Game {
         }
         return delta;
     }
-    
+
     private void handleF3Combinations() {
         if (input.isKeyPressed(GLFW_KEY_A)) {
             for (com.mineshaft.world.Chunk chunk : world.getChunks()) {
                 chunk.setNeedsRebuild(true);
             }
         }
-        
+
         if (input.isKeyPressed(GLFW_KEY_B)) {
             debugScreen.toggleHitboxes();
         }
-        
+
         if (input.isKeyPressed(GLFW_KEY_G)) {
             debugScreen.toggleChunkBorders();
         }
-        
+
         if (input.isKeyPressed(GLFW_KEY_N)) {
             toggleSpectatorMode();
         }
-        
+
         if (input.isKeyPressed(GLFW_KEY_P)) {
             pauseOnLostFocus = !pauseOnLostFocus;
         }
-        
+
         if (input.isKeyPressed(GLFW_KEY_S)) {
             renderSky = !renderSky;
         }
     }
-    
+
     private void cycleGameMode(int direction) {
         GameMode current = player.getGameMode();
         GameMode next = direction > 0 ? current.next() : current.previous();
-        
+
         previousGameMode = current;
         player.setGameMode(next);
     }
-    
+
     private void toggleSpectatorMode() {
         GameMode current = player.getGameMode();
-        
+
         if (current == GameMode.SPECTATOR) {
             player.setGameMode(previousGameMode);
         } else {
@@ -584,109 +630,63 @@ public class Game {
             player.setGameMode(GameMode.SPECTATOR);
         }
     }
-    
+
     private void toggleFullscreen() {
         fullscreen = !fullscreen;
-        
+
         long monitor = glfwGetPrimaryMonitor();
         GLFWVidMode vidmode = glfwGetVideoMode(monitor);
-        
+
         if (vidmode != null) {
             if (fullscreen) {
                 glfwSetWindowMonitor(
-                    window,
-                    monitor,
-                    0, 0,
-                    vidmode.width(),
-                    vidmode.height(),
-                    vidmode.refreshRate()
-                );
+                        window,
+                        monitor,
+                        0, 0,
+                        vidmode.width(),
+                        vidmode.height(),
+                        vidmode.refreshRate());
             } else {
                 glfwSetWindowMonitor(
-                    window,
-                    NULL,
-                    100, 100,
-                    Settings.WINDOW_WIDTH,
-                    Settings.WINDOW_HEIGHT,
-                    GLFW_DONT_CARE
-                );
+                        window,
+                        NULL,
+                        100, 100,
+                        Settings.WINDOW_WIDTH,
+                        Settings.WINDOW_HEIGHT,
+                        GLFW_DONT_CARE);
             }
         }
     }
-    
-    private void breakBlock() {
-        float[] dir = camera.getForwardVector();
-        
-        RayCast.RayResult ray = RayCast.cast(
-            world,
-            player.getX(),
-            player.getEyeY(),
-            player.getZ(),
-            dir[0], dir[1], dir[2],
-            REACH_DISTANCE
-        );
-        
-        if (ray.hit) {
-            world.setBlock(ray.x, ray.y, ray.z, Blocks.AIR);
-        }
-    }
-    
-    private void placeBlock() {
-        Block selectedBlock = inventory.getSelectedBlock();
-        if (selectedBlock == null || selectedBlock == Blocks.AIR) return;
-        
-        float[] dir = camera.getForwardVector();
-        
-        RayCast.RayResult ray = RayCast.cast(
-            world,
-            player.getX(),
-            player.getEyeY(),
-            player.getZ(),
-            dir[0], dir[1], dir[2],
-            REACH_DISTANCE
-        );
-        
-        if (ray.hit) {
-            world.setBlock(ray.px, ray.py, ray.pz, selectedBlock);
-        }
-    }
-    
-    private void pickBlock() {
-        float[] dir = camera.getForwardVector();
-        
-        RayCast.RayResult ray = RayCast.cast(
-            world,
-            player.getX(),
-            player.getEyeY(),
-            player.getZ(),
-            dir[0], dir[1], dir[2],
-            REACH_DISTANCE
-        );
-        
-        if (ray.hit) {
-            Block block = world.getBlock(ray.x, ray.y, ray.z);
-            if (block != null && !block.isAir()) {
-                inventory.setSlot(inventory.getSelectedSlot(), block);
-            }
+
+    private String getCameraModeName() {
+        switch (cameraMode) {
+            case 0:
+                return "First Person";
+            case 1:
+                return "Third Person Back";
+            case 2:
+                return "Third Person Front";
+            default:
+                return "Unknown";
         }
     }
 
     private void cleanup() {
         System.out.println("===============================================");
         System.out.println("Shutting down...");
-        
+
         if (world != null) {
             world.cleanup();
         }
-        
+
         if (skyRenderer != null) {
             skyRenderer.cleanup();
         }
-        
+
         if (chatOverlay != null) {
             chatOverlay.cleanup();
         }
-        
+
         BlockTextures.cleanup();
         TextureManager.cleanup();
 
@@ -702,7 +702,15 @@ public class Game {
         System.out.println("===============================================");
     }
 
-    public int getFPS() { return fps; }
-    public int getTPS() { return tps; }
-    public long getWindow() { return window; }
+    public int getFPS() {
+        return fps;
+    }
+
+    public int getTPS() {
+        return tps;
+    }
+
+    public long getWindow() {
+        return window;
+    }
 }
