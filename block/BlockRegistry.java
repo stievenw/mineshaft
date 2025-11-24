@@ -18,7 +18,7 @@ public class BlockRegistry {
     public static GameBlock AIR;
     public static GameBlock STONE;
     public static GameBlock DIRT;
-    public static GameBlock GRASS;
+    public static GameBlock GRASS_BLOCK;
     public static GameBlock COBBLESTONE;
     public static GameBlock BEDROCK;
     public static GameBlock SAND;
@@ -41,7 +41,7 @@ public class BlockRegistry {
         AIR = register("mineshaft:air");
         STONE = register("mineshaft:stone");
         DIRT = register("mineshaft:dirt");
-        GRASS = register("mineshaft:grass");
+        GRASS_BLOCK = register("mineshaft:grass_block");
         COBBLESTONE = register("mineshaft:cobblestone");
         BEDROCK = register("mineshaft:bedrock");
         SAND = register("mineshaft:sand");

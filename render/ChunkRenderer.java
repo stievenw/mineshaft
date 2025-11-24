@@ -15,8 +15,7 @@ import java.util.concurrent.*;
 import static org.lwjgl.opengl.GL11.*;
 
 /**
- * ⚡ FIXED: OpenGL-safe async mesh building
- * Data preparation in worker threads, VBO creation on main thread
+ * ⚡ FIXED: Correct texture mapping + lighting fix for grass_block
  */
 public class ChunkRenderer {
 
@@ -26,20 +25,17 @@ public class ChunkRenderer {
     private World world;
     private LightingEngine lightingEngine;
 
+    private TextureAtlas atlas;
+
     private final ExecutorService meshBuilder;
     private final Set<Chunk> buildingChunks = ConcurrentHashMap.newKeySet();
     private final Queue<ChunkBuildTask> buildQueue = new ConcurrentLinkedQueue<>();
-
-    // ⚡ NEW: Queue for VBO creation on main thread
     private final Queue<MeshDataResult> pendingVBOCreation = new ConcurrentLinkedQueue<>();
 
     private static final int MAX_BUILDS_PER_FRAME = 3;
     private static final int MAX_VBO_UPLOADS_PER_FRAME = 5;
     private static final int WORKER_THREADS = 2;
 
-    /**
-     * Task for queuing chunk rebuilds
-     */
     private static class ChunkBuildTask {
         Chunk chunk;
         double distanceSquared;
@@ -50,9 +46,6 @@ public class ChunkRenderer {
         }
     }
 
-    /**
-     * ⚡ NEW: Mesh data prepared in worker thread, ready for VBO creation
-     */
     private static class MeshDataResult {
         Chunk chunk;
         List<Float> solidVertices;
@@ -67,13 +60,18 @@ public class ChunkRenderer {
         }
     }
 
-    public ChunkRenderer() {
+    public ChunkRenderer(TextureAtlas atlas) {
+        this.atlas = atlas;
         this.meshBuilder = Executors.newFixedThreadPool(WORKER_THREADS, r -> {
             Thread t = new Thread(r, "MeshBuilder");
             t.setDaemon(true);
             t.setPriority(Thread.NORM_PRIORITY - 1);
             return t;
         });
+    }
+
+    public ChunkRenderer() {
+        this(BlockTextures.getAtlas());
     }
 
     public void setWorld(World world) {
@@ -101,24 +99,14 @@ public class ChunkRenderer {
         buildQueue.offer(new ChunkBuildTask(chunk, distSq));
     }
 
-    /**
-     * ⚡ FIXED: Two-stage update process
-     */
     public void update() {
-        // Stage 1: Start building mesh data (in worker threads)
         startMeshDataBuilds();
-
-        // Stage 2: Upload completed mesh data to GPU (on main thread)
         uploadPendingMeshes();
     }
 
-    /**
-     * Stage 1: Start async mesh data preparation
-     */
     private void startMeshDataBuilds() {
         int buildsStarted = 0;
 
-        // Sort by distance (closest first)
         List<ChunkBuildTask> sortedTasks = new ArrayList<>();
         ChunkBuildTask task;
         while ((task = buildQueue.poll()) != null) {
@@ -128,23 +116,18 @@ public class ChunkRenderer {
 
         for (ChunkBuildTask t : sortedTasks) {
             if (buildsStarted >= MAX_BUILDS_PER_FRAME) {
-                buildQueue.offer(t); // Re-queue for next frame
+                buildQueue.offer(t);
                 continue;
             }
 
             if (t.chunk.needsRebuild() && !buildingChunks.contains(t.chunk)) {
                 buildingChunks.add(t.chunk);
-
-                // Build mesh data in worker thread (NO OpenGL calls)
                 meshBuilder.submit(() -> buildMeshDataAsync(t.chunk));
                 buildsStarted++;
             }
         }
     }
 
-    /**
-     * ⚡ SAFE: Build mesh data (NO OpenGL calls, runs in worker thread)
-     */
     private void buildMeshDataAsync(Chunk chunk) {
         try {
             List<Float> solidVertices = new ArrayList<>();
@@ -154,7 +137,6 @@ public class ChunkRenderer {
             int offsetX = chunk.getChunkX() * Chunk.CHUNK_SIZE;
             int offsetZ = chunk.getChunkZ() * Chunk.CHUNK_SIZE;
 
-            // Build vertex data (CPU work only, no OpenGL)
             for (int x = 0; x < Chunk.CHUNK_SIZE; x++) {
                 for (int y = 0; y < Chunk.CHUNK_HEIGHT; y++) {
                     for (int z = 0; z < Chunk.CHUNK_SIZE; z++) {
@@ -170,6 +152,10 @@ public class ChunkRenderer {
                             } else if (block == BlockRegistry.OAK_LEAVES) {
                                 addBlockFacesToList(chunk, x, y, z, worldX, worldY, worldZ, translucentVertices, block,
                                         false, true);
+                            } else if (block == BlockRegistry.GRASS_BLOCK) {
+                                // Grass block: base to solid, overlay to translucent
+                                addBlockFacesToList(chunk, x, y, z, worldX, worldY, worldZ, solidVertices, block, false,
+                                        false, translucentVertices);
                             } else {
                                 addBlockFacesToList(chunk, x, y, z, worldX, worldY, worldZ, solidVertices, block, false,
                                         false);
@@ -179,7 +165,6 @@ public class ChunkRenderer {
                 }
             }
 
-            // Queue for VBO creation on main thread
             pendingVBOCreation.offer(new MeshDataResult(chunk, solidVertices, waterVertices, translucentVertices));
 
         } catch (Exception e) {
@@ -190,9 +175,6 @@ public class ChunkRenderer {
         }
     }
 
-    /**
-     * Stage 2: Upload mesh data to GPU (MAIN THREAD ONLY)
-     */
     private void uploadPendingMeshes() {
         int uploaded = 0;
 
@@ -200,12 +182,10 @@ public class ChunkRenderer {
             MeshDataResult result = pendingVBOCreation.poll();
 
             if (result != null) {
-                // Create meshes and upload to GPU (OpenGL calls on main thread)
-                ChunkMesh solidMesh = new ChunkMesh();
-                ChunkMesh waterMesh = new ChunkMesh();
-                ChunkMesh translucentMesh = new ChunkMesh();
+                ChunkMesh solidMesh = new ChunkMesh(atlas);
+                ChunkMesh waterMesh = new ChunkMesh(atlas);
+                ChunkMesh translucentMesh = new ChunkMesh(atlas);
 
-                // Add vertices from prepared data
                 for (int i = 0; i < result.solidVertices.size(); i += 12) {
                     solidMesh.addVertex(
                             result.solidVertices.get(i), result.solidVertices.get(i + 1),
@@ -239,12 +219,10 @@ public class ChunkRenderer {
                             result.translucentVertices.get(i + 10), result.translucentVertices.get(i + 11));
                 }
 
-                // Build VBOs (OpenGL calls on main thread - SAFE!)
                 solidMesh.build();
                 waterMesh.build();
                 translucentMesh.build();
 
-                // Swap old meshes
                 swapMeshes(result.chunk, solidMesh, waterMesh, translucentMesh);
 
                 result.chunk.setNeedsRebuild(false);
@@ -341,7 +319,7 @@ public class ChunkRenderer {
         return dx * dx + dz * dz;
     }
 
-    // ========== MESH DATA BUILDING (NO OpenGL, thread-safe) ==========
+    // ========== MESH DATA BUILDING ==========
 
     private void addWaterBlockToList(Chunk chunk, int x, int y, int z,
             float worldX, float worldY, float worldZ,
@@ -429,6 +407,13 @@ public class ChunkRenderer {
     private void addBlockFacesToList(Chunk chunk, int x, int y, int z,
             float worldX, float worldY, float worldZ,
             List<Float> vertices, GameBlock block, boolean isWater, boolean isTranslucent) {
+        addBlockFacesToList(chunk, x, y, z, worldX, worldY, worldZ, vertices, block, isWater, isTranslucent, null);
+    }
+
+    private void addBlockFacesToList(Chunk chunk, int x, int y, int z,
+            float worldX, float worldY, float worldZ,
+            List<Float> vertices, GameBlock block, boolean isWater, boolean isTranslucent,
+            List<Float> overlayVertices) {
         float[] color = new float[] { 1.0f, 1.0f, 1.0f };
         float alpha = isTranslucent ? 0.9f : 1.0f;
 
@@ -441,19 +426,23 @@ public class ChunkRenderer {
         }
 
         if (shouldRenderFace(chunk, x, y, z - 1, block)) {
-            addNorthFaceToList(chunk, vertices, x, y, z, worldX, worldY, worldZ, color, alpha, block);
+            addSideFaceToList(chunk, vertices, x, y, z, worldX, worldY, worldZ, color, alpha, block, 0, 0, -1,
+                    overlayVertices);
         }
 
         if (shouldRenderFace(chunk, x, y, z + 1, block)) {
-            addSouthFaceToList(chunk, vertices, x, y, z, worldX, worldY, worldZ, color, alpha, block);
+            addSideFaceToList(chunk, vertices, x, y, z, worldX, worldY, worldZ, color, alpha, block, 0, 0, 1,
+                    overlayVertices);
         }
 
         if (shouldRenderFace(chunk, x + 1, y, z, block)) {
-            addEastFaceToList(chunk, vertices, x, y, z, worldX, worldY, worldZ, color, alpha, block);
+            addSideFaceToList(chunk, vertices, x, y, z, worldX, worldY, worldZ, color, alpha, block, 1, 0, 0,
+                    overlayVertices);
         }
 
         if (shouldRenderFace(chunk, x - 1, y, z, block)) {
-            addWestFaceToList(chunk, vertices, x, y, z, worldX, worldY, worldZ, color, alpha, block);
+            addSideFaceToList(chunk, vertices, x, y, z, worldX, worldY, worldZ, color, alpha, block, -1, 0, 0,
+                    overlayVertices);
         }
     }
 
@@ -505,105 +494,116 @@ public class ChunkRenderer {
                 color[0] * light4, color[1] * light4, color[2] * light4, alpha, 0, -1, 0, u1, v2);
     }
 
-    private void addNorthFaceToList(Chunk chunk, List<Float> vertices, int x, int y, int z,
+    // ✅ FIXED: Side face with proper lighting and overlay support
+    private void addSideFaceToList(Chunk chunk, List<Float> vertices, int x, int y, int z,
             float worldX, float worldY, float worldZ,
-            float[] color, float alpha, GameBlock block) {
+            float[] color, float alpha, GameBlock block,
+            float nx, float ny, float nz, List<Float> overlayVertices) {
+
         SunLightCalculator sunLight = (lightingEngine != null) ? lightingEngine.getSunLight() : null;
-        float sunBrightness = getSunBrightness(sunLight, 0, 0, -1);
+        float sunBrightness = getSunBrightness(sunLight, nx, ny, nz);
 
-        float light1 = getLightBrightness(chunk, x, y, z - 1) * sunBrightness;
-        float light2 = getLightBrightness(chunk, x, y + 1, z - 1) * sunBrightness;
-        float light3 = getLightBrightness(chunk, x + 1, y + 1, z - 1) * sunBrightness;
-        float light4 = getLightBrightness(chunk, x + 1, y, z - 1) * sunBrightness;
+        // Calculate neighbor position for lighting
+        int neighborX = x + (int) nx;
+        int neighborY = y + (int) ny;
+        int neighborZ = z + (int) nz;
 
-        float[] uv = BlockTextures.getUV(block, "north");
+        float light1 = getLightBrightness(chunk, neighborX, neighborY, neighborZ) * sunBrightness;
+        float light2 = getLightBrightness(chunk, neighborX, neighborY + 1, neighborZ) * sunBrightness;
+        float light3 = light2;
+        float light4 = light1;
+
+        float[] uv = BlockTextures.getUV(block, "side");
         float u1 = uv[0], v1 = uv[1], u2 = uv[2], v2 = uv[3];
 
-        addVertexToList(vertices, worldX, worldY, worldZ,
-                color[0] * light1, color[1] * light1, color[2] * light1, alpha, 0, 0, -1, u1, v2);
-        addVertexToList(vertices, worldX, worldY + 1, worldZ,
-                color[0] * light2, color[1] * light2, color[2] * light2, alpha, 0, 0, -1, u1, v1);
-        addVertexToList(vertices, worldX + 1, worldY + 1, worldZ,
-                color[0] * light3, color[1] * light3, color[2] * light3, alpha, 0, 0, -1, u2, v1);
-        addVertexToList(vertices, worldX + 1, worldY, worldZ,
-                color[0] * light4, color[1] * light4, color[2] * light4, alpha, 0, 0, -1, u2, v2);
+        // ✅ Render base texture (dirt for grass_block)
+        if (nz == -1) { // North face (-Z)
+            addVertexToList(vertices, worldX, worldY, worldZ,
+                    color[0] * light1, color[1] * light1, color[2] * light1, alpha, nx, ny, nz, u1, v2);
+            addVertexToList(vertices, worldX, worldY + 1, worldZ,
+                    color[0] * light2, color[1] * light2, color[2] * light2, alpha, nx, ny, nz, u1, v1);
+            addVertexToList(vertices, worldX + 1, worldY + 1, worldZ,
+                    color[0] * light3, color[1] * light3, color[2] * light3, alpha, nx, ny, nz, u2, v1);
+            addVertexToList(vertices, worldX + 1, worldY, worldZ,
+                    color[0] * light4, color[1] * light4, color[2] * light4, alpha, nx, ny, nz, u2, v2);
+        } else if (nz == 1) { // South face (+Z)
+            addVertexToList(vertices, worldX, worldY, worldZ + 1,
+                    color[0] * light1, color[1] * light1, color[2] * light1, alpha, nx, ny, nz, u1, v2);
+            addVertexToList(vertices, worldX + 1, worldY, worldZ + 1,
+                    color[0] * light2, color[1] * light2, color[2] * light2, alpha, nx, ny, nz, u2, v2);
+            addVertexToList(vertices, worldX + 1, worldY + 1, worldZ + 1,
+                    color[0] * light3, color[1] * light3, color[2] * light3, alpha, nx, ny, nz, u2, v1);
+            addVertexToList(vertices, worldX, worldY + 1, worldZ + 1,
+                    color[0] * light4, color[1] * light4, color[2] * light4, alpha, nx, ny, nz, u1, v1);
+        } else if (nx == 1) { // East face (+X)
+            addVertexToList(vertices, worldX + 1, worldY, worldZ,
+                    color[0] * light1, color[1] * light1, color[2] * light1, alpha, nx, ny, nz, u1, v2);
+            addVertexToList(vertices, worldX + 1, worldY + 1, worldZ,
+                    color[0] * light2, color[1] * light2, color[2] * light2, alpha, nx, ny, nz, u1, v1);
+            addVertexToList(vertices, worldX + 1, worldY + 1, worldZ + 1,
+                    color[0] * light3, color[1] * light3, color[2] * light3, alpha, nx, ny, nz, u2, v1);
+            addVertexToList(vertices, worldX + 1, worldY, worldZ + 1,
+                    color[0] * light4, color[1] * light4, color[2] * light4, alpha, nx, ny, nz, u2, v2);
+        } else if (nx == -1) { // West face (-X)
+            addVertexToList(vertices, worldX, worldY, worldZ,
+                    color[0] * light1, color[1] * light1, color[2] * light1, alpha, nx, ny, nz, u1, v2);
+            addVertexToList(vertices, worldX, worldY, worldZ + 1,
+                    color[0] * light2, color[1] * light2, color[2] * light2, alpha, nx, ny, nz, u2, v2);
+            addVertexToList(vertices, worldX, worldY + 1, worldZ + 1,
+                    color[0] * light3, color[1] * light3, color[2] * light3, alpha, nx, ny, nz, u2, v1);
+            addVertexToList(vertices, worldX, worldY + 1, worldZ,
+                    color[0] * light4, color[1] * light4, color[2] * light4, alpha, nx, ny, nz, u1, v1);
+        }
+
+        // ✅ Render overlay if exists (grass_block side overlay)
+        if (block.hasOverlay("side_overlay") && overlayVertices != null) {
+            String overlayTexture = block.getOverlayTexture("side_overlay");
+            float[] overlayUv = BlockTextures.getUV(overlayTexture);
+            float[] tint = block.getBiomeColor();
+
+            float ou1 = overlayUv[0], ov1 = overlayUv[1], ou2 = overlayUv[2], ov2 = overlayUv[3];
+            float offset = 0.001f;
+
+            if (nz == -1) { // North
+                addVertexToList(overlayVertices, worldX, worldY, worldZ - offset,
+                        tint[0] * light1, tint[1] * light1, tint[2] * light1, alpha, nx, ny, nz, ou1, ov2);
+                addVertexToList(overlayVertices, worldX, worldY + 1, worldZ - offset,
+                        tint[0] * light2, tint[1] * light2, tint[2] * light2, alpha, nx, ny, nz, ou1, ov1);
+                addVertexToList(overlayVertices, worldX + 1, worldY + 1, worldZ - offset,
+                        tint[0] * light3, tint[1] * light3, tint[2] * light3, alpha, nx, ny, nz, ou2, ov1);
+                addVertexToList(overlayVertices, worldX + 1, worldY, worldZ - offset,
+                        tint[0] * light4, tint[1] * light4, tint[2] * light4, alpha, nx, ny, nz, ou2, ov2);
+            } else if (nz == 1) { // South
+                addVertexToList(overlayVertices, worldX, worldY, worldZ + 1 + offset,
+                        tint[0] * light1, tint[1] * light1, tint[2] * light1, alpha, nx, ny, nz, ou1, ov2);
+                addVertexToList(overlayVertices, worldX + 1, worldY, worldZ + 1 + offset,
+                        tint[0] * light2, tint[1] * light2, tint[2] * light2, alpha, nx, ny, nz, ou2, ov2);
+                addVertexToList(overlayVertices, worldX + 1, worldY + 1, worldZ + 1 + offset,
+                        tint[0] * light3, tint[1] * light3, tint[2] * light3, alpha, nx, ny, nz, ou2, ov1);
+                addVertexToList(overlayVertices, worldX, worldY + 1, worldZ + 1 + offset,
+                        tint[0] * light4, tint[1] * light4, tint[2] * light4, alpha, nx, ny, nz, ou1, ov1);
+            } else if (nx == 1) { // East
+                addVertexToList(overlayVertices, worldX + 1 + offset, worldY, worldZ,
+                        tint[0] * light1, tint[1] * light1, tint[2] * light1, alpha, nx, ny, nz, ou1, ov2);
+                addVertexToList(overlayVertices, worldX + 1 + offset, worldY + 1, worldZ,
+                        tint[0] * light2, tint[1] * light2, tint[2] * light2, alpha, nx, ny, nz, ou1, ov1);
+                addVertexToList(overlayVertices, worldX + 1 + offset, worldY + 1, worldZ + 1,
+                        tint[0] * light3, tint[1] * light3, tint[2] * light3, alpha, nx, ny, nz, ou2, ov1);
+                addVertexToList(overlayVertices, worldX + 1 + offset, worldY, worldZ + 1,
+                        tint[0] * light4, tint[1] * light4, tint[2] * light4, alpha, nx, ny, nz, ou2, ov2);
+            } else if (nx == -1) { // West
+                addVertexToList(overlayVertices, worldX - offset, worldY, worldZ,
+                        tint[0] * light1, tint[1] * light1, tint[2] * light1, alpha, nx, ny, nz, ou1, ov2);
+                addVertexToList(overlayVertices, worldX - offset, worldY, worldZ + 1,
+                        tint[0] * light2, tint[1] * light2, tint[2] * light2, alpha, nx, ny, nz, ou2, ov2);
+                addVertexToList(overlayVertices, worldX - offset, worldY + 1, worldZ + 1,
+                        tint[0] * light3, tint[1] * light3, tint[2] * light3, alpha, nx, ny, nz, ou2, ov1);
+                addVertexToList(overlayVertices, worldX - offset, worldY + 1, worldZ,
+                        tint[0] * light4, tint[1] * light4, tint[2] * light4, alpha, nx, ny, nz, ou1, ov1);
+            }
+        }
     }
 
-    private void addSouthFaceToList(Chunk chunk, List<Float> vertices, int x, int y, int z,
-            float worldX, float worldY, float worldZ,
-            float[] color, float alpha, GameBlock block) {
-        SunLightCalculator sunLight = (lightingEngine != null) ? lightingEngine.getSunLight() : null;
-        float sunBrightness = getSunBrightness(sunLight, 0, 0, 1);
-
-        float light1 = getLightBrightness(chunk, x, y, z + 1) * sunBrightness;
-        float light2 = getLightBrightness(chunk, x + 1, y, z + 1) * sunBrightness;
-        float light3 = getLightBrightness(chunk, x + 1, y + 1, z + 1) * sunBrightness;
-        float light4 = getLightBrightness(chunk, x, y + 1, z + 1) * sunBrightness;
-
-        float[] uv = BlockTextures.getUV(block, "south");
-        float u1 = uv[0], v1 = uv[1], u2 = uv[2], v2 = uv[3];
-
-        addVertexToList(vertices, worldX, worldY, worldZ + 1,
-                color[0] * light1, color[1] * light1, color[2] * light1, alpha, 0, 0, 1, u1, v2);
-        addVertexToList(vertices, worldX + 1, worldY, worldZ + 1,
-                color[0] * light2, color[1] * light2, color[2] * light2, alpha, 0, 0, 1, u2, v2);
-        addVertexToList(vertices, worldX + 1, worldY + 1, worldZ + 1,
-                color[0] * light3, color[1] * light3, color[2] * light3, alpha, 0, 0, 1, u2, v1);
-        addVertexToList(vertices, worldX, worldY + 1, worldZ + 1,
-                color[0] * light4, color[1] * light4, color[2] * light4, alpha, 0, 0, 1, u1, v1);
-    }
-
-    private void addEastFaceToList(Chunk chunk, List<Float> vertices, int x, int y, int z,
-            float worldX, float worldY, float worldZ,
-            float[] color, float alpha, GameBlock block) {
-        SunLightCalculator sunLight = (lightingEngine != null) ? lightingEngine.getSunLight() : null;
-        float sunBrightness = getSunBrightness(sunLight, 1, 0, 0);
-
-        float light1 = getLightBrightness(chunk, x + 1, y, z) * sunBrightness;
-        float light2 = getLightBrightness(chunk, x + 1, y + 1, z) * sunBrightness;
-        float light3 = getLightBrightness(chunk, x + 1, y + 1, z + 1) * sunBrightness;
-        float light4 = getLightBrightness(chunk, x + 1, y, z + 1) * sunBrightness;
-
-        float[] uv = BlockTextures.getUV(block, "east");
-        float u1 = uv[0], v1 = uv[1], u2 = uv[2], v2 = uv[3];
-
-        addVertexToList(vertices, worldX + 1, worldY, worldZ,
-                color[0] * light1, color[1] * light1, color[2] * light1, alpha, 1, 0, 0, u1, v2);
-        addVertexToList(vertices, worldX + 1, worldY + 1, worldZ,
-                color[0] * light2, color[1] * light2, color[2] * light2, alpha, 1, 0, 0, u1, v1);
-        addVertexToList(vertices, worldX + 1, worldY + 1, worldZ + 1,
-                color[0] * light3, color[1] * light3, color[2] * light3, alpha, 1, 0, 0, u2, v1);
-        addVertexToList(vertices, worldX + 1, worldY, worldZ + 1,
-                color[0] * light4, color[1] * light4, color[2] * light4, alpha, 1, 0, 0, u2, v2);
-    }
-
-    private void addWestFaceToList(Chunk chunk, List<Float> vertices, int x, int y, int z,
-            float worldX, float worldY, float worldZ,
-            float[] color, float alpha, GameBlock block) {
-        SunLightCalculator sunLight = (lightingEngine != null) ? lightingEngine.getSunLight() : null;
-        float sunBrightness = getSunBrightness(sunLight, -1, 0, 0);
-
-        float light1 = getLightBrightness(chunk, x - 1, y, z) * sunBrightness;
-        float light2 = getLightBrightness(chunk, x - 1, y, z + 1) * sunBrightness;
-        float light3 = getLightBrightness(chunk, x - 1, y + 1, z + 1) * sunBrightness;
-        float light4 = getLightBrightness(chunk, x - 1, y + 1, z) * sunBrightness;
-
-        float[] uv = BlockTextures.getUV(block, "west");
-        float u1 = uv[0], v1 = uv[1], u2 = uv[2], v2 = uv[3];
-
-        addVertexToList(vertices, worldX, worldY, worldZ,
-                color[0] * light1, color[1] * light1, color[2] * light1, alpha, -1, 0, 0, u1, v2);
-        addVertexToList(vertices, worldX, worldY, worldZ + 1,
-                color[0] * light2, color[1] * light2, color[2] * light2, alpha, -1, 0, 0, u2, v2);
-        addVertexToList(vertices, worldX, worldY + 1, worldZ + 1,
-                color[0] * light3, color[1] * light3, color[2] * light3, alpha, -1, 0, 0, u2, v1);
-        addVertexToList(vertices, worldX, worldY + 1, worldZ,
-                color[0] * light4, color[1] * light4, color[2] * light4, alpha, -1, 0, 0, u1, v1);
-    }
-
-    /**
-     * Add single vertex to list (12 floats: pos, color, normal, uv)
-     */
     private void addVertexToList(List<Float> vertices,
             float x, float y, float z,
             float r, float g, float b, float a,
@@ -696,6 +696,7 @@ public class ChunkRenderer {
         int light = getLightSafe(chunk, x, y, z);
         float brightness = LightingEngine.getBrightness(light);
         brightness = (float) Math.pow(brightness, 1.0f / Settings.GAMMA);
+
         return brightness;
     }
 

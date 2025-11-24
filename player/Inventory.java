@@ -22,7 +22,7 @@ public class Inventory {
      * Initialize with common blocks (creative mode)
      */
     private void initializeCreativeInventory() {
-        hotbar[0] = BlockRegistry.GRASS;
+        hotbar[0] = BlockRegistry.GRASS_BLOCK;
         hotbar[1] = BlockRegistry.DIRT;
         hotbar[2] = BlockRegistry.STONE;
         hotbar[3] = BlockRegistry.COBBLESTONE;

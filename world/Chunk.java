@@ -78,7 +78,7 @@ public class Chunk {
                         } else if (biome > 0.65) {
                             block = BlockRegistry.SAND;
                         } else {
-                            block = BlockRegistry.GRASS;
+                            block = BlockRegistry.GRASS_BLOCK;
                         }
                     } else if (y > height - 4 && height >= Settings.SEA_LEVEL) {
                         block = BlockRegistry.DIRT;

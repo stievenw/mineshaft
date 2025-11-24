@@ -55,6 +55,7 @@ util/SimplexNoise.java
 world
 world/BlockType.java
 world/Chunk.java
+world/Direction.java
 world/GameMode.java
 world/interaction
 world/interaction/BlockBreaker.java
