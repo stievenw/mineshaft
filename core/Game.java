@@ -1,6 +1,6 @@
 package com.mineshaft.core;
 
-import com.mineshaft.block.Block;
+import com.mineshaft.block.GameBlock;
 import com.mineshaft.entity.Camera;
 import com.mineshaft.input.InputHandler;
 import com.mineshaft.player.Inventory;
@@ -13,7 +13,7 @@ import com.mineshaft.render.SkyRenderer;
 import com.mineshaft.render.BlockOutlineRenderer;
 import com.mineshaft.render.TextureManager;
 import com.mineshaft.util.Screenshot;
-import com.mineshaft.world.GameMode;
+import com.mineshaft.player.GameMode;
 import com.mineshaft.world.RayCast;
 import com.mineshaft.world.World;
 import com.mineshaft.world.interaction.BlockInteractionHandler;
@@ -229,7 +229,7 @@ public class Game {
         chatOverlay = new ChatOverlay(window);
         commandHandler = new CommandHandler(world, player, timeOfDay, chatOverlay);
 
-        // Initialize block interaction system
+        // Blocks already initialized in Bootstrap; no need to init again
         interactionHandler = new BlockInteractionHandler(world, player, camera, REACH_DISTANCE);
 
         // Initialize block outline renderer
@@ -547,7 +547,7 @@ public class Game {
         // Block placing - hold right mouse to continuously place
         if (player.getGameMode() != GameMode.SPECTATOR) {
             boolean rightMouseHeld = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
-            Block selectedBlock = inventory.getSelectedBlock();
+            GameBlock selectedBlock = inventory.getSelectedBlock();
             interactionHandler.handlePlaceInput(rightMouseHeld, selectedBlock);
         }
 
@@ -564,7 +564,7 @@ public class Game {
                     REACH_DISTANCE);
 
             if (ray.hit) {
-                Block block = world.getBlock(ray.x, ray.y, ray.z);
+                GameBlock block = world.getBlock(ray.x, ray.y, ray.z);
                 if (block != null && !block.isAir()) {
                     inventory.setSlot(inventory.getSelectedSlot(), block);
                 }

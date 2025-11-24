@@ -2,7 +2,7 @@ package com.mineshaft.core;
 
 import com.mineshaft.player.Player;
 import com.mineshaft.render.ChatOverlay;
-import com.mineshaft.world.GameMode;
+import com.mineshaft.player.GameMode;
 import com.mineshaft.world.World;
 
 /**
@@ -10,55 +10,56 @@ import com.mineshaft.world.World;
  * ✅ REFACTORED - Uses Player instead of Camera
  */
 public class CommandHandler {
-    
+
     private final World world;
-    private final Player player;  // ✅ Changed from Camera to Player
+    private final Player player; // ✅ Changed from Camera to Player
     private final TimeOfDay timeOfDay;
     private final ChatOverlay chat;
-    
+
     public CommandHandler(World world, Player player, TimeOfDay timeOfDay, ChatOverlay chat) {
         this.world = world;
-        this.player = player;  // ✅ Changed from camera to player
+        this.player = player; // ✅ Changed from camera to player
         this.timeOfDay = timeOfDay;
         this.chat = chat;
     }
-    
+
     /**
      * ✅ Execute command
      */
     public void executeCommand(String input) {
-        if (input == null || input.isEmpty()) return;
-        
+        if (input == null || input.isEmpty())
+            return;
+
         // Not a command - just a chat message
         if (!input.startsWith("/")) {
             chat.addMessage("<Player> " + input);
             return;
         }
-        
+
         // Parse command
         String[] parts = input.substring(1).toLowerCase().split(" ");
         String command = parts[0];
-        
+
         try {
             switch (command) {
                 case "time":
                     handleTimeCommand(parts);
                     break;
-                    
+
                 case "gamemode":
                 case "gm":
                     handleGameModeCommand(parts);
                     break;
-                    
+
                 case "tp":
                 case "teleport":
                     handleTeleportCommand(parts);
                     break;
-                    
+
                 case "help":
                     handleHelpCommand();
                     break;
-                    
+
                 default:
                     chat.addMessage("§c Unknown command: " + command);
                     chat.addMessage("§7 Type /help for available commands");
@@ -67,7 +68,7 @@ public class CommandHandler {
             chat.addMessage("§c Error executing command: " + e.getMessage());
         }
     }
-    
+
     /**
      * ✅ /time command handler
      */
@@ -76,41 +77,41 @@ public class CommandHandler {
             chat.addMessage("§c Usage: /time <set|add|speed|query> <value>");
             return;
         }
-        
+
         String subCommand = args[1];
-        
+
         switch (subCommand) {
             case "set":
                 if (args.length < 3) {
                     chat.addMessage("§c Usage: /time set <value|day|night|noon|midnight|sunrise|sunset>");
                     return;
                 }
-                
+
                 String setValue = args[2];
-                
+
                 switch (setValue) {
                     case "day":
                     case "noon":
                         timeOfDay.setTimeToNoon();
                         chat.addMessage("Time set to noon (6000)");
                         break;
-                        
+
                     case "night":
                     case "midnight":
                         timeOfDay.setTimeToMidnight();
                         chat.addMessage("Time set to midnight (18000)");
                         break;
-                        
+
                     case "sunrise":
                         timeOfDay.setTimeToSunrise();
                         chat.addMessage("Time set to sunrise (23000)");
                         break;
-                        
+
                     case "sunset":
                         timeOfDay.setTimeToSunset();
                         chat.addMessage("Time set to sunset (12000)");
                         break;
-                        
+
                     default:
                         try {
                             long time = Long.parseLong(setValue);
@@ -120,16 +121,16 @@ public class CommandHandler {
                             chat.addMessage("§c Invalid time value: " + setValue);
                         }
                 }
-                
+
                 world.updateSkylightForTimeChange();
                 break;
-                
+
             case "add":
                 if (args.length < 3) {
                     chat.addMessage("§c Usage: /time add <ticks>");
                     return;
                 }
-                
+
                 try {
                     long add = Long.parseLong(args[2]);
                     timeOfDay.setTimeOfDay(timeOfDay.getWorldTime() + add);
@@ -139,17 +140,17 @@ public class CommandHandler {
                     chat.addMessage("§c Invalid number: " + args[2]);
                 }
                 break;
-                
+
             case "speed":
                 if (args.length < 4 || !args[2].equals("set")) {
                     chat.addMessage("§c Usage: /time speed set <multiplier>");
                     return;
                 }
-                
+
                 try {
                     float speed = Float.parseFloat(args[3]);
                     timeOfDay.setDaySpeed(speed);
-                    
+
                     if (speed == 0) {
                         chat.addMessage("Time cycle paused");
                     } else if (speed == 1) {
@@ -161,7 +162,7 @@ public class CommandHandler {
                     chat.addMessage("§c Invalid speed: " + args[3]);
                 }
                 break;
-                
+
             case "query":
                 long time = timeOfDay.getTimeOfDay();
                 long day = timeOfDay.getDayCount();
@@ -169,13 +170,13 @@ public class CommandHandler {
                 chat.addMessage("Moon Phase: " + timeOfDay.getMoonPhaseName());
                 chat.addMessage("Skylight Level: " + timeOfDay.getSkylightLevel());
                 break;
-                
+
             default:
                 chat.addMessage("§c Unknown time subcommand: " + subCommand);
                 chat.addMessage("§7 Use: set, add, speed, or query");
         }
     }
-    
+
     /**
      * ✅ /gamemode command handler - SURVIVAL, CREATIVE, SPECTATOR
      */
@@ -184,10 +185,10 @@ public class CommandHandler {
             chat.addMessage("§c Usage: /gamemode <survival|creative|spectator>");
             return;
         }
-        
+
         String mode = args[1].toLowerCase();
         GameMode newMode = null;
-        
+
         // Parse gamemode - HANYA 3 MODE: SURVIVAL, CREATIVE, SPECTATOR
         switch (mode) {
             case "survival":
@@ -195,30 +196,30 @@ public class CommandHandler {
             case "0":
                 newMode = GameMode.SURVIVAL;
                 break;
-                
+
             case "creative":
             case "c":
             case "1":
                 newMode = GameMode.CREATIVE;
                 break;
-                
+
             case "spectator":
             case "sp":
             case "3":
-            case "2":  // Support both 2 and 3 for spectator
+            case "2": // Support both 2 and 3 for spectator
                 newMode = GameMode.SPECTATOR;
                 break;
-                
+
             default:
                 chat.addMessage("§c Unknown game mode: " + mode);
                 chat.addMessage("§7 Available: survival (0), creative (1), spectator (2)");
                 return;
         }
-        
-        player.setGameMode(newMode);  // ✅ Changed from camera to player (LINE 212)
+
+        player.setGameMode(newMode); // ✅ Changed from camera to player (LINE 212)
         chat.addMessage("Game mode set to " + newMode.getName());
     }
-    
+
     /**
      * ✅ /tp command - Teleport player
      */
@@ -227,19 +228,19 @@ public class CommandHandler {
             chat.addMessage("§c Usage: /tp <x> <y> <z>");
             return;
         }
-        
+
         try {
             float x = Float.parseFloat(args[1]);
             float y = Float.parseFloat(args[2]);
             float z = Float.parseFloat(args[3]);
-            
+
             player.setPosition(x, y, z);
             chat.addMessage(String.format("Teleported to %.1f, %.1f, %.1f", x, y, z));
         } catch (NumberFormatException e) {
             chat.addMessage("§c Invalid coordinates");
         }
     }
-    
+
     /**
      * ✅ /help command
      */

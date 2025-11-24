@@ -1,6 +1,6 @@
 package com.mineshaft.world.interaction;
 
-import com.mineshaft.block.Block;
+import com.mineshaft.block.GameBlock;
 import com.mineshaft.entity.Camera;
 import com.mineshaft.player.Player;
 import com.mineshaft.world.World;
@@ -67,7 +67,7 @@ public class BlockInteractionHandler {
      * @param mousePressed  true if place button (right mouse) is currently pressed
      * @param selectedBlock The block type to place
      */
-    public void handlePlaceInput(boolean mousePressed, Block selectedBlock) {
+    public void handlePlaceInput(boolean mousePressed, GameBlock selectedBlock) {
         if (mousePressed) {
             // Try to place while button held (respects cooldown)
             placer.tryPlaceBlock(selectedBlock);

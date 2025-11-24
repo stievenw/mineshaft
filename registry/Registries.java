@@ -6,25 +6,23 @@ package com.mineshaft.registry;
  */
 public class Registries {
     // Block registry
-    public static final Registry<com.mineshaft.block.Block> BLOCK = 
-        new Registry<>(Identifier.of("block"));
-    
+    public static final Registry<com.mineshaft.block.GameBlock> BLOCK = new Registry<>(Identifier.of("block"));
+
     // Item registry
-    public static final Registry<com.mineshaft.item.Item> ITEM = 
-        new Registry<>(Identifier.of("item"));
-    
+    public static final Registry<com.mineshaft.item.Item> ITEM = new Registry<>(Identifier.of("item"));
+
     // Entity type registry
-    public static final Registry<com.mineshaft.entity.EntityType<?>> ENTITY_TYPE = 
-        new Registry<>(Identifier.of("entity_type"));
-    
+    public static final Registry<com.mineshaft.entity.EntityType<?>> ENTITY_TYPE = new Registry<>(
+            Identifier.of("entity_type"));
+
     // Block entity type registry (for future: chests, furnaces, etc.)
-    // public static final Registry<BlockEntityType<?>> BLOCK_ENTITY_TYPE = 
-    //     new Registry<>(Identifier.of("block_entity_type"));
-    
+    // public static final Registry<BlockEntityType<?>> BLOCK_ENTITY_TYPE =
+    // new Registry<>(Identifier.of("block_entity_type"));
+
     // Biome registry (for future)
-    // public static final Registry<Biome> BIOME = 
-    //     new Registry<>(Identifier.of("biome"));
-    
+    // public static final Registry<Biome> BIOME =
+    // new Registry<>(Identifier.of("biome"));
+
     /**
      * Initialize all registries (called during bootstrap)
      */
@@ -33,7 +31,7 @@ public class Registries {
         System.out.println("Initializing registries...");
         System.out.println("==============================================");
     }
-    
+
     /**
      * Freeze all registries (called after registration phase)
      */

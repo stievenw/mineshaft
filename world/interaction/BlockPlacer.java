@@ -1,7 +1,7 @@
 package com.mineshaft.world.interaction;
 
-import com.mineshaft.block.Block;
-import com.mineshaft.block.Blocks;
+import com.mineshaft.block.BlockRegistry;
+import com.mineshaft.block.GameBlock;
 import com.mineshaft.entity.Camera;
 import com.mineshaft.player.Player;
 import com.mineshaft.world.RayCast;
@@ -68,8 +68,8 @@ public class BlockPlacer {
      * @param block The block type to place
      * @return true if a block was placed
      */
-    public boolean tryPlaceBlock(Block block) {
-        if (!canPlace() || block == null || block == Blocks.AIR) {
+    public boolean tryPlaceBlock(GameBlock block) {
+        if (!canPlace() || block == null || block == BlockRegistry.AIR) {
             return false;
         }
 
@@ -116,7 +116,7 @@ public class BlockPlacer {
      */
     private boolean isValidPlacement(int x, int y, int z) {
         // Check if position already has a solid block
-        Block existingBlock = world.getBlock(x, y, z);
+        GameBlock existingBlock = world.getBlock(x, y, z);
         if (existingBlock != null && existingBlock.isSolid()) {
             return false;
         }

@@ -4,7 +4,7 @@ import com.mineshaft.entity.Camera;
 import com.mineshaft.player.Player;
 import com.mineshaft.world.RayCast;
 import com.mineshaft.world.World;
-import com.mineshaft.block.Blocks;
+import com.mineshaft.block.BlockRegistry;
 
 /**
  * Handles block breaking logic with hold-to-break functionality.
@@ -84,7 +84,7 @@ public class BlockBreaker {
 
         // Break the block if hit
         if (ray.hit) {
-            world.setBlock(ray.x, ray.y, ray.z, Blocks.AIR);
+            world.setBlock(ray.x, ray.y, ray.z, BlockRegistry.AIR);
             cooldownTimer = COOLDOWN_DURATION;
             return true;
         }

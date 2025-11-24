@@ -1,27 +1,16 @@
 package com.mineshaft.player;
 
-import com.mineshaft.block.Block;
-import com.mineshaft.block.Blocks;
+import com.mineshaft.block.BlockRegistry;
+import com.mineshaft.block.GameBlock;
 import com.mineshaft.core.Settings;
 import com.mineshaft.entity.Entity;
-import com.mineshaft.world.GameMode;
 import com.mineshaft.world.World;
-
 import static org.lwjgl.glfw.GLFW.*;
 
-/**
- * ✅ UPDATED v6.0 - Player Movement and Physics
- * - Movement tracking for position deltas
- * - Sneaking system with proper collision
- * - velocityX and velocityZ tracking
- * - isMoving(), isSneaking() methods
- * - Proper eye height adjustment for sneaking
- */
 public class Player extends Entity {
-    // Player dimensions
+    private static final float PLAYER_WIDTH = 0.6f;
     private static final float PLAYER_HEIGHT = 1.8f;
     private static final float PLAYER_HEIGHT_SNEAKING = 1.5f;
-    private static final float PLAYER_WIDTH = 0.6f;
     private static final float EYE_HEIGHT = 1.62f;
     private static final float EYE_HEIGHT_SNEAKING = 1.54f;
 
@@ -52,14 +41,14 @@ public class Player extends Entity {
     private boolean sprinting = false;
     private boolean sneaking = false;
 
-    // Movement tracking
+    // Movement tracking for animations
     private double velocityX = 0;
     private double velocityZ = 0;
     private double prevX = 0;
     private double prevZ = 0;
 
     public Player(World world, long window) {
-        super(null);
+        super(null); // EntityType is null for player for now
         this.world = world;
         this.window = window;
         this.inventory = new Inventory();
@@ -68,7 +57,7 @@ public class Player extends Entity {
     }
 
     /**
-     * ✅ Process movement input (called every frame for smooth movement)
+     * Process movement input (called every frame for smooth movement)
      */
     public void processMovementInput(float frameDelta) {
         // Store previous position
@@ -84,7 +73,7 @@ public class Player extends Entity {
     }
 
     /**
-     * ✅ Physics update (called at fixed 20 TPS)
+     * Physics update (called at fixed 20 TPS)
      */
     @Override
     public void tick() {
@@ -100,7 +89,7 @@ public class Player extends Entity {
     }
 
     /**
-     * ✅ Process all movement input
+     * Process all movement input
      */
     private void processMovement(float delta) {
         // Check sneaking state (Left Shift)
@@ -180,7 +169,7 @@ public class Player extends Entity {
     }
 
     /**
-     * ✅ Handle vertical movement while flying
+     * Handle vertical movement while flying
      */
     private void handleFlyingVerticalMovement(float speed) {
         float moveY = 0;
@@ -207,7 +196,7 @@ public class Player extends Entity {
     }
 
     /**
-     * ✅ Handle jumping and swimming
+     * Handle jumping and swimming
      */
     private void handleJumping() {
         boolean spaceDown = glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS;
@@ -231,7 +220,7 @@ public class Player extends Entity {
     }
 
     /**
-     * ✅ Move with collision detection and step-up
+     * Move with collision detection and step-up
      */
     private void moveWithCollisionAndStep(float dx, float dz) {
         if (world == null) {
@@ -308,7 +297,7 @@ public class Player extends Entity {
     }
 
     /**
-     * ✅ Find ground Y position below player
+     * Find ground Y position below player
      */
     private float getGroundYBelow(float px, float py, float pz) {
         if (world == null)
@@ -329,7 +318,7 @@ public class Player extends Entity {
         for (int checkY = startY; checkY >= startY - searchDepth && checkY >= 0; checkY--) {
             for (int bx = minX; bx <= maxX; bx++) {
                 for (int bz = minZ; bz <= maxZ; bz++) {
-                    Block block = world.getBlock(bx, checkY, bz);
+                    GameBlock block = world.getBlock(bx, checkY, bz);
 
                     if (block.isSolid()) {
                         highestGroundY = Math.max(highestGroundY, checkY);
@@ -350,7 +339,7 @@ public class Player extends Entity {
     }
 
     /**
-     * ✅ Check if player is in water
+     * Check if player is in water
      */
     private void checkWaterStatus() {
         if (world == null) {
@@ -364,22 +353,22 @@ public class Player extends Entity {
 
         // Check head position
         int headY = (int) Math.floor(y + getCurrentEyeHeight() - 0.1f);
-        Block headBlock = world.getBlock(checkX, headY, checkZ);
-        headInWater = (headBlock == Blocks.WATER);
+        GameBlock headBlock = world.getBlock(checkX, headY, checkZ);
+        headInWater = (headBlock == BlockRegistry.WATER);
 
         // Check body position
         int bodyY = (int) Math.floor(y + getCurrentHeight() * 0.5f);
-        Block bodyBlock = world.getBlock(checkX, bodyY, checkZ);
+        GameBlock bodyBlock = world.getBlock(checkX, bodyY, checkZ);
 
         // Check feet position
         int feetY = (int) Math.floor(y + 0.4f);
-        Block feetBlock = world.getBlock(checkX, feetY, checkZ);
+        GameBlock feetBlock = world.getBlock(checkX, feetY, checkZ);
 
-        inWater = (bodyBlock == Blocks.WATER) || (feetBlock == Blocks.WATER);
+        inWater = (bodyBlock == BlockRegistry.WATER) || (feetBlock == BlockRegistry.WATER);
     }
 
     /**
-     * ✅ Apply water physics
+     * Apply water physics
      */
     private void applyWaterPhysics(float delta) {
         velocityY += WATER_GRAVITY;
@@ -420,7 +409,7 @@ public class Player extends Entity {
     }
 
     /**
-     * ✅ Apply gravity and ground physics
+     * Apply gravity and ground physics
      */
     private void applyPhysics(float delta) {
         // Ground snap when standing still
@@ -494,7 +483,7 @@ public class Player extends Entity {
     }
 
     /**
-     * ✅ Check collision with current player height (accounts for sneaking)
+     * Check collision with current player height (accounts for sneaking)
      */
     private boolean isColliding(float px, float py, float pz) {
         if (world == null)
@@ -513,7 +502,7 @@ public class Player extends Entity {
         for (int bx = minX; bx <= maxX; bx++) {
             for (int by = minY; by <= maxY; by++) {
                 for (int bz = minZ; bz <= maxZ; bz++) {
-                    Block block = world.getBlock(bx, by, bz);
+                    GameBlock block = world.getBlock(bx, by, bz);
                     if (block.isSolid()) {
                         return true;
                     }
@@ -525,7 +514,7 @@ public class Player extends Entity {
     }
 
     /**
-     * ✅ Check if player is on ground
+     * Check if player is on ground
      */
     private boolean isOnGroundCheck(float px, float py, float pz) {
         if (world == null)
@@ -541,7 +530,7 @@ public class Player extends Entity {
 
         for (int bx = minX; bx <= maxX; bx++) {
             for (int bz = minZ; bz <= maxZ; bz++) {
-                Block block = world.getBlock(bx, checkY, bz);
+                GameBlock block = world.getBlock(bx, checkY, bz);
                 if (block.isSolid()) {
                     return true;
                 }
@@ -552,7 +541,7 @@ public class Player extends Entity {
     }
 
     /**
-     * ✅ Check ceiling collision
+     * Check ceiling collision
      */
     private boolean isCeilingCollision(float px, float py, float pz) {
         if (world == null)
@@ -569,7 +558,7 @@ public class Player extends Entity {
 
         for (int bx = minX; bx <= maxX; bx++) {
             for (int bz = minZ; bz <= maxZ; bz++) {
-                Block block = world.getBlock(bx, checkY, bz);
+                GameBlock block = world.getBlock(bx, checkY, bz);
                 if (block.isSolid()) {
                     return true;
                 }
@@ -580,7 +569,7 @@ public class Player extends Entity {
     }
 
     /**
-     * ✅ Toggle flying mode
+     * Toggle flying mode
      */
     public void toggleFlying() {
         if (gameMode.canFly()) {
@@ -599,44 +588,26 @@ public class Player extends Entity {
     // GETTERS
     // ========================================
 
-    /**
-     * ✅ Get current player height (changes when sneaking)
-     */
     public float getCurrentHeight() {
         return sneaking ? PLAYER_HEIGHT_SNEAKING : PLAYER_HEIGHT;
     }
 
-    /**
-     * ✅ Get current eye height (changes when sneaking)
-     */
     public float getCurrentEyeHeight() {
         return sneaking ? EYE_HEIGHT_SNEAKING : EYE_HEIGHT;
     }
 
-    /**
-     * ✅ Get eye Y position (for camera and rendering)
-     */
     public float getEyeY() {
         return y + getCurrentEyeHeight();
     }
 
-    /**
-     * ✅ Check if player is currently moving
-     */
     public boolean isMoving() {
         return Math.abs(velocityX) > 0.001 || Math.abs(velocityZ) > 0.001;
     }
 
-    /**
-     * ✅ Check if player is sneaking
-     */
     public boolean isSneaking() {
         return sneaking;
     }
 
-    /**
-     * ✅ Get horizontal velocity magnitude
-     */
     public double getHorizontalVelocity() {
         return Math.sqrt(velocityX * velocityX + velocityZ * velocityZ);
     }
@@ -681,9 +652,6 @@ public class Player extends Entity {
     // SETTERS
     // ========================================
 
-    /**
-     * ✅ Set game mode
-     */
     public void setGameMode(GameMode mode) {
         this.gameMode = mode;
 

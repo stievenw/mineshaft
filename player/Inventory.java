@@ -1,45 +1,45 @@
 package com.mineshaft.player;
 
-import com.mineshaft.block.Block;
-import com.mineshaft.block.Blocks;
+import com.mineshaft.block.BlockRegistry;
+import com.mineshaft.block.GameBlock;
 
 /**
  * Player inventory system
  */
 public class Inventory {
-    private Block[] hotbar;
+    private GameBlock[] hotbar;
     private int selectedSlot;
-    
+
     public Inventory() {
-        this.hotbar = new Block[9];
+        this.hotbar = new GameBlock[9];
         this.selectedSlot = 0;
-        
+
         // Default creative inventory
         initializeCreativeInventory();
     }
-    
+
     /**
      * Initialize with common blocks (creative mode)
      */
     private void initializeCreativeInventory() {
-        hotbar[0] = Blocks.GRASS;
-        hotbar[1] = Blocks.DIRT;
-        hotbar[2] = Blocks.STONE;
-        hotbar[3] = Blocks.COBBLESTONE;
-        hotbar[4] = Blocks.WOOD;
-        hotbar[5] = Blocks.LOG;
-        hotbar[6] = Blocks.LEAVES;
-        hotbar[7] = Blocks.SAND;
-        hotbar[8] = Blocks.GRAVEL;
+        hotbar[0] = BlockRegistry.GRASS;
+        hotbar[1] = BlockRegistry.DIRT;
+        hotbar[2] = BlockRegistry.STONE;
+        hotbar[3] = BlockRegistry.COBBLESTONE;
+        hotbar[4] = BlockRegistry.OAK_PLANKS;
+        hotbar[5] = BlockRegistry.OAK_LOG;
+        hotbar[6] = BlockRegistry.OAK_LEAVES;
+        hotbar[7] = BlockRegistry.SAND;
+        hotbar[8] = BlockRegistry.GRAVEL;
     }
-    
+
     /**
      * Get currently selected block
      */
-    public Block getSelectedBlock() {
+    public GameBlock getSelectedBlock() {
         return hotbar[selectedSlot];
     }
-    
+
     /**
      * Select slot (0-8)
      */
@@ -48,36 +48,37 @@ public class Inventory {
             this.selectedSlot = slot;
         }
     }
-    
+
     /**
      * Select next slot
      */
     public void nextSlot() {
         selectedSlot = (selectedSlot + 1) % 9;
     }
-    
+
     /**
      * Select previous slot
      */
     public void prevSlot() {
         selectedSlot--;
-        if (selectedSlot < 0) selectedSlot = 8;
+        if (selectedSlot < 0)
+            selectedSlot = 8;
     }
-    
+
     /**
      * Set block in slot
      */
-    public void setSlot(int slot, Block block) {
+    public void setSlot(int slot, GameBlock block) {
         if (slot >= 0 && slot < 9) {
             hotbar[slot] = block;
         }
     }
-    
+
     public int getSelectedSlot() {
         return selectedSlot;
     }
-    
-    public Block[] getHotbar() {
+
+    public GameBlock[] getHotbar() {
         return hotbar;
     }
 }
