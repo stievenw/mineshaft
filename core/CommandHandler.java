@@ -1,23 +1,24 @@
 package com.mineshaft.core;
 
-import com.mineshaft.entity.Camera;
+import com.mineshaft.player.Player;
 import com.mineshaft.render.ChatOverlay;
 import com.mineshaft.world.GameMode;
 import com.mineshaft.world.World;
 
 /**
  * ✅ Minecraft-style command handler
+ * ✅ REFACTORED - Uses Player instead of Camera
  */
 public class CommandHandler {
     
-    private World world;
-    private Camera camera;
-    private TimeOfDay timeOfDay;
-    private ChatOverlay chat;
+    private final World world;
+    private final Player player;  // ✅ Changed from Camera to Player
+    private final TimeOfDay timeOfDay;
+    private final ChatOverlay chat;
     
-    public CommandHandler(World world, Camera camera, TimeOfDay timeOfDay, ChatOverlay chat) {
+    public CommandHandler(World world, Player player, TimeOfDay timeOfDay, ChatOverlay chat) {
         this.world = world;
-        this.camera = camera;
+        this.player = player;  // ✅ Changed from camera to player
         this.timeOfDay = timeOfDay;
         this.chat = chat;
     }
@@ -47,6 +48,11 @@ public class CommandHandler {
                 case "gamemode":
                 case "gm":
                     handleGameModeCommand(parts);
+                    break;
+                    
+                case "tp":
+                case "teleport":
+                    handleTeleportCommand(parts);
                     break;
                     
                 case "help":
@@ -209,8 +215,29 @@ public class CommandHandler {
                 return;
         }
         
-        camera.setGameMode(newMode);
+        player.setGameMode(newMode);  // ✅ Changed from camera to player (LINE 212)
         chat.addMessage("Game mode set to " + newMode.getName());
+    }
+    
+    /**
+     * ✅ /tp command - Teleport player
+     */
+    private void handleTeleportCommand(String[] args) {
+        if (args.length < 4) {
+            chat.addMessage("§c Usage: /tp <x> <y> <z>");
+            return;
+        }
+        
+        try {
+            float x = Float.parseFloat(args[1]);
+            float y = Float.parseFloat(args[2]);
+            float z = Float.parseFloat(args[3]);
+            
+            player.setPosition(x, y, z);
+            chat.addMessage(String.format("Teleported to %.1f, %.1f, %.1f", x, y, z));
+        } catch (NumberFormatException e) {
+            chat.addMessage("§c Invalid coordinates");
+        }
     }
     
     /**
@@ -228,6 +255,8 @@ public class CommandHandler {
         chat.addMessage("§7  Display current time info");
         chat.addMessage("§a/gamemode <survival|creative|spectator>");
         chat.addMessage("§7  Change game mode (shortcuts: s, c, sp or 0-2)");
+        chat.addMessage("§a/tp <x> <y> <z>");
+        chat.addMessage("§7  Teleport to coordinates");
         chat.addMessage("§a/help");
         chat.addMessage("§7  Show this help message");
     }

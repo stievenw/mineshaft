@@ -16,6 +16,7 @@ public class Settings {
     public static final int WORLD_HEIGHT = 128;
     public static final int SEA_LEVEL = 63;
     public static final long WORLD_SEED = 12345678L;
+    public static final int RENDER_DISTANCE = 8; // ✅ ADDED - chunks render distance
     
     // Rendering
     public static final float FOV = 70.0f;
@@ -24,7 +25,7 @@ public class Settings {
     public static final boolean ENABLE_FOG = true;
     public static final float FOG_DENSITY = 0.012f;
     
-    // ✅ NEW: Lighting settings
+    // Lighting settings
     public static final float GAMMA = 1.2f; // Brightness gamma (1.0 = normal, 1.5 = brighter)
     public static final float BRIGHTNESS_BOOST = 0.15f; // Additional brightness (0.0 - 0.3)
     public static final float MIN_BRIGHTNESS = 0.35f; // Minimum world brightness (0.0 - 0.5)
@@ -38,8 +39,9 @@ public class Settings {
     public static final int TARGET_TPS = 20;
     public static final boolean DEBUG_MODE = false;
 
-    // ✅ NEW: Texture settings
+    // Texture settings
     public static final boolean TEXTURE_FILTERING = false; // false = pixelated (NEAREST), true = smooth (LINEAR)
     public static final boolean MIPMAPS_ENABLED = false;   // Enable mipmaps for distant textures
 
+    private Settings() {}
 }

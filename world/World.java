@@ -11,6 +11,7 @@ import java.util.*;
 
 /**
  * ⚡ OPTIMIZED World with Async Lighting & Mesh Building
+ * ✅ UPDATED - Added light query methods for DebugScreen
  */
 public class World {
     private Map<ChunkPos, Chunk> chunks = new HashMap<>();
@@ -224,6 +225,67 @@ public class World {
         }
     }
     
+    // ========== ✅ NEW: Light Query Methods for DebugScreen ==========
+    
+    /**
+     * Get total light level at world position (max of sky and block light)
+     */
+    public int getLight(int worldX, int worldY, int worldZ) {
+        int skyLight = getSkyLight(worldX, worldY, worldZ);
+        int blockLight = getBlockLight(worldX, worldY, worldZ);
+        return Math.max(skyLight, blockLight);
+    }
+    
+    /**
+     * Get skylight level at world position
+     */
+    public int getSkyLight(int worldX, int worldY, int worldZ) {
+        if (worldY < 0 || worldY >= Chunk.CHUNK_HEIGHT) {
+            return 0;
+        }
+        
+        int chunkX = Math.floorDiv(worldX, Chunk.CHUNK_SIZE);
+        int chunkZ = Math.floorDiv(worldZ, Chunk.CHUNK_SIZE);
+        
+        ChunkPos pos = new ChunkPos(chunkX, chunkZ);
+        Chunk chunk = chunks.get(pos);
+        
+        if (chunk == null || !chunk.isLightInitialized()) {
+            return 0;
+        }
+        
+        int localX = Math.floorMod(worldX, Chunk.CHUNK_SIZE);
+        int localZ = Math.floorMod(worldZ, Chunk.CHUNK_SIZE);
+        
+        return chunk.getSkyLight(localX, worldY, localZ);
+    }
+    
+    /**
+     * Get block light level at world position
+     */
+    public int getBlockLight(int worldX, int worldY, int worldZ) {
+        if (worldY < 0 || worldY >= Chunk.CHUNK_HEIGHT) {
+            return 0;
+        }
+        
+        int chunkX = Math.floorDiv(worldX, Chunk.CHUNK_SIZE);
+        int chunkZ = Math.floorDiv(worldZ, Chunk.CHUNK_SIZE);
+        
+        ChunkPos pos = new ChunkPos(chunkX, chunkZ);
+        Chunk chunk = chunks.get(pos);
+        
+        if (chunk == null || !chunk.isLightInitialized()) {
+            return 0;
+        }
+        
+        int localX = Math.floorMod(worldX, Chunk.CHUNK_SIZE);
+        int localZ = Math.floorMod(worldZ, Chunk.CHUNK_SIZE);
+        
+        return chunk.getBlockLight(localX, worldY, localZ);
+    }
+    
+    // ========== End Light Query Methods ==========
+    
     public void render(Camera camera) {
         List<Chunk> visibleChunks = new ArrayList<>();
         
@@ -252,6 +314,9 @@ public class World {
         return chunks.get(new ChunkPos(chunkX, chunkZ));
     }
     
+    /**
+     * Get number of loaded chunks (for DebugScreen)
+     */
     public int getLoadedChunkCount() {
         return chunks.size();
     }

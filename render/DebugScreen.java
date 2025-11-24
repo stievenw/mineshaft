@@ -1,263 +1,494 @@
 package com.mineshaft.render;
 
 import com.mineshaft.entity.Camera;
-import com.mineshaft.world.Chunk;
 import com.mineshaft.world.GameMode;
 import com.mineshaft.world.World;
+import com.mineshaft.core.Settings;
+
+import org.lwjgl.opengl.GL11;
+import org.lwjgl.system.MemoryStack;
+
+import java.nio.IntBuffer;
 
 import static org.lwjgl.glfw.GLFW.*;
 import static org.lwjgl.opengl.GL11.*;
 
 /**
- * ✅ LWJGL 3 - Minecraft-style F3 debug screen - Fixed warnings
+ * ✅ Minecraft-style F3 Debug Screen
+ * Shows detailed game information on left and right side
  */
 public class DebugScreen {
+    
     private final long window;
+    private SimpleFont font;
+    
     private boolean visible = false;
-    // ✅ REMOVED: Unused field showFPS
     private boolean showHitboxes = false;
     private boolean showChunkBorders = false;
-    private boolean showProfiler = false;
-    private int screenWidth;
-    private int screenHeight;
     
-    // FPS tracking
-    private int fps = 0;
-    private int tps = 0;
+    private int windowWidth;
+    private int windowHeight;
+    
+    // Performance tracking
+    private long lastMemoryCheck = 0;
     private long usedMemory = 0;
     private long maxMemory = 0;
+    private int memoryPercent = 0;
+    
+    private static final int LINE_HEIGHT = 10;
+    private static final int MARGIN = 4;
     
     public DebugScreen(long window) {
         this.window = window;
-        updateScreenSize();
-        updateMemory();
+        this.font = new SimpleFont();
+        
+        updateWindowSize();
+        
+        System.out.println("[DebugScreen] Initialized");
     }
     
-    private void updateScreenSize() {
-        int[] w = new int[1];
-        int[] h = new int[1];
-        glfwGetFramebufferSize(window, w, h);
-        this.screenWidth = w[0];
-        this.screenHeight = h[0];
+    /**
+     * Update window size (call when window resizes)
+     */
+    private void updateWindowSize() {
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            IntBuffer width = stack.mallocInt(1);
+            IntBuffer height = stack.mallocInt(1);
+            
+            glfwGetWindowSize(window, width, height);
+            
+            windowWidth = width.get(0);
+            windowHeight = height.get(0);
+        }
     }
     
+    /**
+     * Toggle debug screen visibility
+     */
+    public void toggle() {
+        visible = !visible;
+        System.out.println("Debug screen: " + (visible ? "ON" : "OFF"));
+    }
+    
+    /**
+     * Toggle hitbox rendering
+     */
+    public void toggleHitboxes() {
+        showHitboxes = !showHitboxes;
+        System.out.println("Hitboxes: " + (showHitboxes ? "ON" : "OFF"));
+    }
+    
+    /**
+     * Toggle chunk border rendering
+     */
+    public void toggleChunkBorders() {
+        showChunkBorders = !showChunkBorders;
+        System.out.println("Chunk borders: " + (showChunkBorders ? "ON" : "OFF"));
+    }
+    
+    /**
+     * Main render method
+     */
     public void render(Camera camera, World world, GameMode gameMode, int fps, int tps) {
         if (!visible) return;
         
-        this.fps = fps;
-        this.tps = tps;
-        updateMemory();
-        updateScreenSize();
+        updateWindowSize();
+        updateMemoryStats();
         
+        // Setup 2D orthographic projection
+        setup2D();
+        
+        // Render semi-transparent background
+        renderBackground();
+        
+        // Render debug info
+        renderLeftSide(camera, world, gameMode, fps, tps);
+        renderRightSide();
+        
+        // Restore 3D perspective
+        restore3D();
+    }
+    
+    /**
+     * Setup 2D rendering mode
+     */
+    private void setup2D() {
         glMatrixMode(GL_PROJECTION);
         glPushMatrix();
         glLoadIdentity();
-        glOrtho(0, screenWidth, screenHeight, 0, -1, 1);
+        glOrtho(0, windowWidth, windowHeight, 0, -1, 1);
         
         glMatrixMode(GL_MODELVIEW);
         glPushMatrix();
         glLoadIdentity();
         
         glDisable(GL_DEPTH_TEST);
+        glDisable(GL_LIGHTING);
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        
-        renderLeftSide(camera, world, gameMode);
-        renderRightSide();
-        
-        if (showChunkBorders) {
-            renderChunkBordersHint();
-        }
-        
-        glDisable(GL_BLEND);
-        glEnable(GL_DEPTH_TEST);
-        
+    }
+    
+    /**
+     * Restore 3D rendering mode
+     */
+    private void restore3D() {
         glMatrixMode(GL_PROJECTION);
         glPopMatrix();
+        
         glMatrixMode(GL_MODELVIEW);
         glPopMatrix();
+        
+        glEnable(GL_DEPTH_TEST);
     }
     
-    private void renderLeftSide(Camera camera, World world, GameMode gameMode) {
-        int y = 10;
-        int lineHeight = 12;
+    /**
+     * Render semi-transparent background
+     */
+    private void renderBackground() {
+        glDisable(GL_TEXTURE_2D);
+        glColor4f(0.0f, 0.0f, 0.0f, 0.5f);
         
-        drawText(5, y, "Mineshaft Alpha 0.7 (FPS: " + fps + " TPS: " + tps + ")", 1, 1, 1);
-        y += lineHeight;
+        // Left panel
+        glBegin(GL_QUADS);
+        glVertex2f(0, 0);
+        glVertex2f(windowWidth / 2.0f, 0);
+        glVertex2f(windowWidth / 2.0f, windowHeight / 2.0f);
+        glVertex2f(0, windowHeight / 2.0f);
+        glEnd();
         
-        y += lineHeight;
+        // Right panel
+        glBegin(GL_QUADS);
+        glVertex2f(windowWidth / 2.0f, 0);
+        glVertex2f(windowWidth, 0);
+        glVertex2f(windowWidth, windowHeight / 2.0f);
+        glVertex2f(windowWidth / 2.0f, windowHeight / 2.0f);
+        glEnd();
         
-        drawText(5, y, String.format("XYZ: %.3f / %.3f / %.3f", 
-            camera.getX(), camera.getY(), camera.getZ()), 1, 1, 1);
-        y += lineHeight;
+        glEnable(GL_TEXTURE_2D);
+        glColor4f(1, 1, 1, 1);
+    }
+    
+    /**
+     * Render left side debug info (like Minecraft F3 left)
+     */
+    private void renderLeftSide(Camera camera, World world, GameMode gameMode, int fps, int tps) {
+        float x = MARGIN;
+        float y = MARGIN;
         
-        int bx = (int) Math.floor(camera.getX());
-        int by = (int) Math.floor(camera.getY());
-        int bz = (int) Math.floor(camera.getZ());
-        drawText(5, y, String.format("Block: %d %d %d", bx, by, bz), 1, 1, 1);
-        y += lineHeight;
+        // Title
+        drawText("Mineshaft " + Settings.VERSION, x, y, 1, 1, 1);
+        y += LINE_HEIGHT;
         
-        int cx = Math.floorDiv(bx, Chunk.CHUNK_SIZE);
-        int cz = Math.floorDiv(bz, Chunk.CHUNK_SIZE);
-        int localX = Math.floorMod(bx, Chunk.CHUNK_SIZE);
-        int localZ = Math.floorMod(bz, Chunk.CHUNK_SIZE);
-        drawText(5, y, String.format("Chunk: %d %d in %d %d %d", 
-            localX, localZ, cx, 0, cz), 1, 1, 1);
-        y += lineHeight;
+        // Separator
+        y += 2;
         
-        String facing = getFacingDirection(camera.getYaw());
-        drawText(5, y, String.format("Facing: %s (%.1f / %.1f)", 
-            facing, camera.getYaw(), camera.getPitch()), 1, 1, 1);
-        y += lineHeight;
+        // FPS & TPS
+        drawText(String.format("FPS: %d | TPS: %d", fps, tps), x, y, 1, 1, 0);
+        y += LINE_HEIGHT;
         
-        y += lineHeight;
+        // Separator
+        y += 2;
         
-        drawText(5, y, "Biome: minecraft:plains", 1, 1, 1);
-        y += lineHeight;
+        // Position
+        drawText(String.format("XYZ: %.3f / %.3f / %.3f", 
+            camera.getX(), camera.getY(), camera.getZ()), x, y, 1, 1, 1);
+        y += LINE_HEIGHT;
         
-        drawText(5, y, "Light: 15 (15 sky, 0 block)", 1, 1, 1);
-        y += lineHeight;
+        // Block position
+        int blockX = (int) Math.floor(camera.getX());
+        int blockY = (int) Math.floor(camera.getY());
+        int blockZ = (int) Math.floor(camera.getZ());
+        drawText(String.format("Block: %d %d %d", blockX, blockY, blockZ), x, y, 1, 1, 1);
+        y += LINE_HEIGHT;
         
-        y += lineHeight;
+        // Chunk position
+        int chunkX = blockX >> 4;
+        int chunkZ = blockZ >> 4;
+        int chunkLocalX = blockX & 15;
+        int chunkLocalZ = blockZ & 15;
+        drawText(String.format("Chunk: %d %d %d in %d %d", 
+            chunkLocalX, blockY, chunkLocalZ, chunkX, chunkZ), x, y, 1, 1, 1);
+        y += LINE_HEIGHT;
         
-        drawText(5, y, "Game Mode: " + gameMode.getName(), 1, 1, 0);
-        y += lineHeight;
+        // Separator
+        y += 2;
         
-        if (camera.isFlying()) {
-            drawText(5, y, "Flying: YES", 0, 1, 0);
-        } else {
-            drawText(5, y, "On Ground: " + (camera.isOnGround() ? "YES" : "NO"), 1, 1, 1);
+        // Rotation
+        drawText(String.format("Facing: %s (%.1f / %.1f)", 
+            getCardinalDirection(camera.getYaw()), 
+            camera.getYaw(), 
+            camera.getPitch()), x, y, 1, 1, 1);
+        y += LINE_HEIGHT;
+        
+        // Separator
+        y += 2;
+        
+        // Light level (if in world)
+        if (world != null) {
+            int lightLevel = world.getLight(blockX, blockY, blockZ);
+            int skyLight = world.getSkyLight(blockX, blockY, blockZ);
+            int blockLight = world.getBlockLight(blockX, blockY, blockZ);
+            
+            drawText(String.format("Light: %d (Sky: %d, Block: %d)", 
+                lightLevel, skyLight, blockLight), x, y, 1, 1, 0);
+            y += LINE_HEIGHT;
         }
-        y += lineHeight;
         
-        y += lineHeight;
+        // Separator
+        y += 2;
         
-        drawText(5, y, "Loaded Chunks: " + world.getLoadedChunkCount(), 1, 1, 1);
-        y += lineHeight;
+        // Game mode
+        drawText("Game Mode: " + gameMode.getName(), x, y, 0.5f, 1, 0.5f);
+        y += LINE_HEIGHT;
         
-        drawText(5, y, String.format("Memory: %d%% %dMB / %dMB", 
-            (usedMemory * 100 / maxMemory), usedMemory, maxMemory), 1, 1, 1);
-        y += lineHeight;
+        // Player state
+        String state = "Walking";
+        if (camera.getPlayer().isFlying()) {
+            state = "Flying";
+        } else if (camera.getPlayer().isInWater()) {
+            state = "Swimming";
+        } else if (camera.getPlayer().isSprinting()) {
+            state = "Sprinting";
+        }
+        drawText("State: " + state, x, y, 0.5f, 1, 0.5f);
+        y += LINE_HEIGHT;
         
-        long totalMemory = Runtime.getRuntime().totalMemory() / 1024 / 1024;
-        drawText(5, y, "Allocated: " + totalMemory + "MB", 1, 1, 1);
-        y += lineHeight;
+        // Separator
+        y += 2;
+        
+        // Biome (placeholder)
+        drawText("Biome: Plains", x, y, 0.5f, 1, 1);
+        y += LINE_HEIGHT;
+        
+        // Separator
+        y += 2;
+        
+        // Render distance
+        int renderDistance = Settings.RENDER_DISTANCE;
+        drawText(String.format("Render Distance: %d chunks", renderDistance), x, y, 1, 1, 1);
+        y += LINE_HEIGHT;
+        
+        // Loaded chunks
+        int loadedChunks = world != null ? world.getLoadedChunkCount() : 0;
+        drawText(String.format("Loaded Chunks: %d", loadedChunks), x, y, 1, 1, 1);
+        y += LINE_HEIGHT;
+        
+        // Separator
+        y += 2;
+        
+        // Debug flags
+        if (showChunkBorders) {
+            drawText("Chunk Borders: ON", x, y, 1, 0.5f, 0.5f);
+            y += LINE_HEIGHT;
+        }
+        
+        if (showHitboxes) {
+            drawText("Hitboxes: ON", x, y, 1, 0.5f, 0.5f);
+            y += LINE_HEIGHT;
+        }
     }
     
+    /**
+     * Render right side debug info (like Minecraft F3 right)
+     */
     private void renderRightSide() {
-        int y = 10;
-        int lineHeight = 12;
+        float x = windowWidth / 2.0f + MARGIN;
+        float y = MARGIN;
         
+        // Java version
         String javaVersion = System.getProperty("java.version");
-        drawTextRight(screenWidth - 5, y, "Java: " + javaVersion, 1, 1, 1);
-        y += lineHeight;
+        drawText("Java: " + javaVersion, x, y, 1, 1, 1);
+        y += LINE_HEIGHT;
         
-        drawTextRight(screenWidth - 5, y, "Display: " + screenWidth + "x" + screenHeight, 1, 1, 1);
-        y += lineHeight;
+        // Separator
+        y += 2;
         
-        String glVersion = glGetString(GL_VERSION);
-        drawTextRight(screenWidth - 5, y, glVersion, 1, 1, 1);
-        y += lineHeight;
+        // Memory usage
+        drawText(String.format("Mem: %d%% %dMB / %dMB", 
+            memoryPercent, usedMemory, maxMemory), x, y, 1, 1, 0);
+        y += LINE_HEIGHT;
         
-        String renderer = glGetString(GL_RENDERER);
-        if (renderer.length() > 40) {
-            renderer = renderer.substring(0, 37) + "...";
+        // Memory bar
+        renderMemoryBar(x, y, 150, 8);
+        y += LINE_HEIGHT + 2;
+        
+        // Separator
+        y += 2;
+        
+        // Allocated memory
+        long totalMemory = Runtime.getRuntime().totalMemory() / 1024 / 1024;
+        drawText(String.format("Allocated: %dMB", totalMemory), x, y, 0.7f, 0.7f, 0.7f);
+        y += LINE_HEIGHT;
+        
+        // Separator
+        y += 2;
+        
+        // OpenGL info
+        String glVersion = GL11.glGetString(GL11.GL_VERSION);
+        drawText("OpenGL: " + (glVersion != null ? glVersion : "Unknown"), x, y, 1, 1, 1);
+        y += LINE_HEIGHT;
+        
+        String glRenderer = GL11.glGetString(GL11.GL_RENDERER);
+        if (glRenderer != null && glRenderer.length() > 40) {
+            glRenderer = glRenderer.substring(0, 37) + "...";
         }
-        drawTextRight(screenWidth - 5, y, renderer, 1, 1, 1);
-        y += lineHeight;
+        drawText("GPU: " + (glRenderer != null ? glRenderer : "Unknown"), x, y, 1, 1, 1);
+        y += LINE_HEIGHT;
         
-        y += lineHeight;
+        // Separator
+        y += 2;
         
-        drawTextRight(screenWidth - 5, screenHeight - 30, 
-            "Press F3 + Q for help", 0.7f, 0.7f, 0.7f);
+        // Display info
+        drawText(String.format("Display: %dx%d", windowWidth, windowHeight), x, y, 1, 1, 1);
+        y += LINE_HEIGHT;
+        
+        // VSync
+        drawText("VSync: " + (Settings.VSYNC ? "ON" : "OFF"), x, y, 1, 1, 1);
+        y += LINE_HEIGHT;
+        
+        // Separator
+        y += 2;
+        
+        // CPU info
+        int cores = Runtime.getRuntime().availableProcessors();
+        drawText(String.format("CPU: %d cores", cores), x, y, 1, 1, 1);
+        y += LINE_HEIGHT;
+        
+        // Separator
+        y += 2;
+        
+        // OS info
+        String os = System.getProperty("os.name");
+        String arch = System.getProperty("os.arch");
+        drawText(String.format("OS: %s (%s)", os, arch), x, y, 0.7f, 0.7f, 0.7f);
+        y += LINE_HEIGHT;
+        
+        // Separator
+        y += 2;
+        
+        // Help text
+        y = windowHeight / 2.0f - LINE_HEIGHT * 6;
+        drawText("F3 + Q = Help", x, y, 0.5f, 0.5f, 0.5f);
+        y += LINE_HEIGHT;
+        drawText("F3 + A = Reload chunks", x, y, 0.5f, 0.5f, 0.5f);
+        y += LINE_HEIGHT;
+        drawText("F3 + B = Hitboxes", x, y, 0.5f, 0.5f, 0.5f);
+        y += LINE_HEIGHT;
+        drawText("F3 + G = Chunk borders", x, y, 0.5f, 0.5f, 0.5f);
+        y += LINE_HEIGHT;
+        drawText("F3 + N = Gamemode", x, y, 0.5f, 0.5f, 0.5f);
+        y += LINE_HEIGHT;
     }
     
-    private void renderChunkBordersHint() {
-        int y = screenHeight / 2;
-        drawTextCentered(screenWidth / 2, y, "Chunk Borders: ON", 1, 1, 0);
-    }
-    
-    private String getFacingDirection(float yaw) {
-        yaw = yaw % 360;
-        if (yaw < 0) yaw += 360;
+    /**
+     * Render memory usage bar
+     */
+    private void renderMemoryBar(float x, float y, float width, float height) {
+        glDisable(GL_TEXTURE_2D);
         
-        if (yaw >= 337.5 || yaw < 22.5) return "south";
-        if (yaw >= 22.5 && yaw < 67.5) return "southwest";
-        if (yaw >= 67.5 && yaw < 112.5) return "west";
-        if (yaw >= 112.5 && yaw < 157.5) return "northwest";
-        if (yaw >= 157.5 && yaw < 202.5) return "north";
-        if (yaw >= 202.5 && yaw < 247.5) return "northeast";
-        if (yaw >= 247.5 && yaw < 292.5) return "east";
-        if (yaw >= 292.5 && yaw < 337.5) return "southeast";
-        
-        return "unknown";
-    }
-    
-    private void updateMemory() {
-        Runtime runtime = Runtime.getRuntime();
-        maxMemory = runtime.maxMemory() / 1024 / 1024;
-        long totalMemory = runtime.totalMemory() / 1024 / 1024;
-        long freeMemory = runtime.freeMemory() / 1024 / 1024;
-        usedMemory = totalMemory - freeMemory;
-    }
-    
-    private void drawText(int x, int y, String text, float r, float g, float b) {
-        int width = text.length() * 6;
-        
-        glColor4f(0, 0, 0, 0.5f);
+        // Background (dark gray)
+        glColor4f(0.2f, 0.2f, 0.2f, 0.8f);
         glBegin(GL_QUADS);
         glVertex2f(x, y);
         glVertex2f(x + width, y);
-        glVertex2f(x + width, y + 10);
-        glVertex2f(x, y + 10);
+        glVertex2f(x + width, y + height);
+        glVertex2f(x, y + height);
         glEnd();
         
-        glColor3f(r, g, b);
+        // Memory bar (gradient: green -> yellow -> red)
+        float percent = memoryPercent / 100.0f;
+        float barWidth = width * percent;
+        
+        float r = Math.min(1.0f, percent * 2);
+        float g = Math.min(1.0f, 2 - percent * 2);
+        float b = 0.0f;
+        
+        glColor4f(r, g, b, 0.9f);
         glBegin(GL_QUADS);
-        glVertex2f(x + 2, y + 2);
-        glVertex2f(x + width - 2, y + 2);
-        glVertex2f(x + width - 2, y + 8);
-        glVertex2f(x + 2, y + 8);
+        glVertex2f(x, y);
+        glVertex2f(x + barWidth, y);
+        glVertex2f(x + barWidth, y + height);
+        glVertex2f(x, y + height);
         glEnd();
+        
+        // Border
+        glColor4f(1, 1, 1, 0.5f);
+        glBegin(GL_LINE_LOOP);
+        glVertex2f(x, y);
+        glVertex2f(x + width, y);
+        glVertex2f(x + width, y + height);
+        glVertex2f(x, y + height);
+        glEnd();
+        
+        glEnable(GL_TEXTURE_2D);
+        glColor4f(1, 1, 1, 1);
     }
     
-    private void drawTextRight(int x, int y, String text, float r, float g, float b) {
-        int width = text.length() * 6;
-        drawText(x - width, y, text, r, g, b);
+    /**
+     * Update memory statistics
+     */
+    private void updateMemoryStats() {
+        long now = System.currentTimeMillis();
+        if (now - lastMemoryCheck < 500) return; // Update every 500ms
+        
+        lastMemoryCheck = now;
+        
+        Runtime runtime = Runtime.getRuntime();
+        long totalMemory = runtime.totalMemory();
+        long freeMemory = runtime.freeMemory();
+        long maxMemoryBytes = runtime.maxMemory();
+        
+        usedMemory = (totalMemory - freeMemory) / 1024 / 1024; // MB
+        maxMemory = maxMemoryBytes / 1024 / 1024; // MB
+        
+        memoryPercent = (int) ((usedMemory * 100) / maxMemory);
     }
     
-    private void drawTextCentered(int x, int y, String text, float r, float g, float b) {
-        int width = text.length() * 6;
-        drawText(x - width / 2, y, text, r, g, b);
+    /**
+     * Get cardinal direction from yaw
+     */
+    private String getCardinalDirection(float yaw) {
+        yaw = yaw % 360;
+        if (yaw < 0) yaw += 360;
+        
+        if (yaw >= 337.5 || yaw < 22.5) return "North (Z-)";
+        if (yaw >= 22.5 && yaw < 67.5) return "North-East";
+        if (yaw >= 67.5 && yaw < 112.5) return "East (X+)";
+        if (yaw >= 112.5 && yaw < 157.5) return "South-East";
+        if (yaw >= 157.5 && yaw < 202.5) return "South (Z+)";
+        if (yaw >= 202.5 && yaw < 247.5) return "South-West";
+        if (yaw >= 247.5 && yaw < 292.5) return "West (X-)";
+        if (yaw >= 292.5 && yaw < 337.5) return "North-West";
+        
+        return "Unknown";
     }
     
-    public void toggle() { 
-        visible = !visible; 
-        System.out.println("Debug screen: " + (visible ? "ON" : "OFF"));
+    /**
+     * Draw text using SimpleFont
+     */
+    private void drawText(String text, float x, float y, float r, float g, float b) {
+        font.drawStringWithShadow(text, x, y, r, g, b, 1.0f);
     }
     
-    public void setVisible(boolean visible) { this.visible = visible; }
-    public boolean isVisible() { return visible; }
-    
-    public void toggleHitboxes() { 
-        showHitboxes = !showHitboxes; 
-        System.out.println("Hitboxes: " + (showHitboxes ? "ON" : "OFF"));
-    }
-    public boolean showHitboxes() { return showHitboxes; }
-    
-    public void toggleChunkBorders() { 
-        showChunkBorders = !showChunkBorders;
-        System.out.println("Chunk borders: " + (showChunkBorders ? "ON" : "OFF"));
-    }
-    public boolean showChunkBorders() { return showChunkBorders; }
-    
-    public void toggleProfiler() {
-        showProfiler = !showProfiler;
-        System.out.println("Profiler: " + (showProfiler ? "ON" : "OFF"));
+    // Getters
+    public boolean isVisible() {
+        return visible;
     }
     
-    public void updateSize(int width, int height) {
-        this.screenWidth = width;
-        this.screenHeight = height;
+    public boolean showChunkBorders() {
+        return showChunkBorders;
+    }
+    
+    public boolean showHitboxes() {
+        return showHitboxes;
+    }
+    
+    /**
+     * Cleanup
+     */
+    public void cleanup() {
+        if (font != null) {
+            font.cleanup();
+        }
     }
 }

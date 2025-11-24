@@ -3,6 +3,7 @@ package com.mineshaft.core;
 import com.mineshaft.entity.Camera;
 import com.mineshaft.input.InputHandler;
 import com.mineshaft.player.Inventory;
+import com.mineshaft.player.Player;
 import com.mineshaft.render.BlockTextures;
 import com.mineshaft.render.ChatOverlay;
 import com.mineshaft.render.DebugScreen;
@@ -30,14 +31,15 @@ import static org.lwjgl.system.MemoryUtil.*;
 
 /**
  * ⚡ OPTIMIZED Game - Async Lighting & Mesh Building
- * ✅ FIXED Chat System - Event-based input handling
+ * ✅ REFACTORED - Player separated from Camera
  */
 public class Game {
     private long window;
     
     private boolean running = false;
     private World world;
-    private Camera camera;
+    private Player player;  // ✅ Player handles all player logic
+    private Camera camera;  // ✅ Camera only handles view
     private TimeOfDay timeOfDay;
     private Inventory inventory;
     private HUD hud;
@@ -149,7 +151,6 @@ public class Game {
 
     private void setupCallbacks() {
         glfwSetScrollCallback(window, (w, xoffset, yoffset) -> {
-            // ✅ Only process scroll if chat is closed
             if (!chatOverlay.isChatOpen()) {
                 scrollOffset += yoffset;
             }
@@ -159,7 +160,6 @@ public class Game {
             glViewport(0, 0, width, height);
             updateProjectionMatrix(width, height);
             
-            // ✅ Update chat overlay size
             if (chatOverlay != null) {
                 chatOverlay.updateSize(width, height);
             }
@@ -218,18 +218,21 @@ public class Game {
         timeOfDay = new TimeOfDay();
         world = new World(timeOfDay);
         
-        camera = new Camera(0, 80, 0, window);
-        camera.setWorld(world);
-        camera.setGameMode(GameMode.CREATIVE);
+        // ✅ Create player first
+        player = new Player(world, window);
+        player.setPosition(0, 80, 0);
+        player.setGameMode(GameMode.CREATIVE);
         
-        inventory = new Inventory();
+        // ✅ Camera follows player
+        camera = new Camera(player, window);
+        
+        inventory = player.getInventory();  // ✅ Get from player
         hud = new HUD(window);
         debugScreen = new DebugScreen(window);
         input = new InputHandler(window);
         
-        // ✅ Initialize chat overlay (will setup its own callbacks)
         chatOverlay = new ChatOverlay(window);
-        commandHandler = new CommandHandler(world, camera, timeOfDay, chatOverlay);
+        commandHandler = new CommandHandler(world, player, timeOfDay, chatOverlay);  // ✅ Pass player
         
         skyRenderer = new SkyRenderer(timeOfDay);
 
@@ -332,14 +335,14 @@ public class Game {
         }
     }
 
-    /**
-     * ⚡ OPTIMIZED: Update with lighting engine update
-     */
     private void update() {
-        // ✅ Only process camera input if chat is closed
+        // ✅ Camera processes input (which calls player.processInput)
         if (!chatOverlay.isChatOpen()) {
             camera.processInput(1.0f / Settings.TARGET_TPS);
         }
+        
+        // ✅ Update player tick
+        player.tick();
         
         int oldSkylight = timeOfDay.getSkylightLevel();
         timeOfDay.update();
@@ -350,20 +353,14 @@ public class Game {
         }
 
         world.updateSunLight();
-        
-        // ⚡ UPDATE LIGHTING ENGINE (smooth transitions)
         world.getLightingEngine().update();
-        
         skyRenderer.update(1.0f / Settings.TARGET_TPS);
 
-        int playerChunkX = (int) Math.floor(camera.getX() / 16);
-        int playerChunkZ = (int) Math.floor(camera.getZ() / 16);
+        int playerChunkX = (int) Math.floor(player.getX() / 16);
+        int playerChunkZ = (int) Math.floor(player.getZ() / 16);
         world.updateChunks(playerChunkX, playerChunkZ);
     }
 
-    /**
-     * ⚡ OPTIMIZED: Render with async mesh building update
-     */
     private void render() {
         float[] skyColor = timeOfDay.getSkyColor();
         float[] fogColor = timeOfDay.getFogColor();
@@ -392,13 +389,11 @@ public class Game {
         }
 
         if (renderSky) {
-            skyRenderer.renderSky(camera.getX(), camera.getY(), camera.getZ());
+            skyRenderer.renderSky(player.getX(), player.getY(), player.getZ());
         }
 
         glColor3f(1.0f, 1.0f, 1.0f);
         world.render(camera);
-        
-        // ⚡ PROCESS PENDING MESH BUILDS (async, throttled to 3 per frame)
         world.getRenderer().update();
 
         if (debugScreen.showChunkBorders()) {
@@ -412,24 +407,22 @@ public class Game {
             hud.render(inventory.getSelectedSlot());
         }
 
-        debugScreen.render(camera, world, camera.getGameMode(), fps, tps);
-        
-        // ✅ Render chat overlay (always last, on top of everything)
+        debugScreen.render(camera, world, player.getGameMode(), fps, tps);
         chatOverlay.render();
     }
     
     private void applyThirdPersonCamera(float distance) {
-        glRotatef(camera.getPitch(), 1, 0, 0);
-        glRotatef(camera.getYaw(), 0, 1, 0);
+        glRotatef(player.getPitch(), 1, 0, 0);
+        glRotatef(player.getYaw(), 0, 1, 0);
         
-        float yawRad = (float) Math.toRadians(camera.getYaw());
-        float pitchRad = (float) Math.toRadians(camera.getPitch());
+        float yawRad = (float) Math.toRadians(player.getYaw());
+        float pitchRad = (float) Math.toRadians(player.getPitch());
         
         float offsetX = (float) (Math.sin(yawRad) * Math.cos(pitchRad) * distance);
         float offsetY = (float) (-Math.sin(pitchRad) * distance);
         float offsetZ = (float) (-Math.cos(yawRad) * Math.cos(pitchRad) * distance);
         
-        glTranslatef(-camera.getX() - offsetX, -camera.getY() - offsetY, -camera.getZ() - offsetZ);
+        glTranslatef(-player.getX() - offsetX, -player.getEyeY() - offsetY, -player.getZ() - offsetZ);
     }
     
     private void renderChunkBorders() {
@@ -438,8 +431,8 @@ public class Game {
         glLineWidth(2.0f);
         glColor3f(0, 0, 1);
         
-        int px = (int) camera.getX();
-        int pz = (int) camera.getZ();
+        int px = (int) player.getX();
+        int pz = (int) player.getZ();
         
         for (int cx = -2; cx <= 2; cx++) {
             for (int cz = -2; cz <= 2; cz++) {
@@ -461,27 +454,16 @@ public class Game {
         glEnable(GL_TEXTURE_2D);
     }
 
-    /**
-     * ✅ FIXED: Handle input with proper chat priority
-     */
     private void handleInput() {
-        // ✅ PRIORITY 1: Check for pending chat messages
         String chatMessage = chatOverlay.getPendingMessage();
         if (chatMessage != null) {
             commandHandler.executeCommand(chatMessage);
-            return; // Don't process other input this frame
+            return;
         }
         
-        // ✅ PRIORITY 2: If chat is open, BLOCK all game input
-        // Chat handles T, /, Enter, Escape via its own callbacks
         if (chatOverlay.isChatOpen()) {
             return; 
         }
-        
-        // ✅ PRIORITY 3: Game input (only when chat is closed)
-        
-        // ⚠️ REMOVED: T and / are now handled by ChatOverlay callbacks
-        // Don't handle them here to prevent conflicts!
         
         if (input.isKeyPressed(GLFW_KEY_ESCAPE)) {
             running = false;
@@ -529,17 +511,15 @@ public class Game {
         }
         
         if (input.isKeyPressed(GLFW_KEY_F) && !f3Down) {
-            camera.toggleFlying();
+            player.toggleFlying();  // ✅ Call player method
         }
         
-        // Hotbar selection (1-9 keys)
         for (int i = 0; i < 9; i++) {
             if (input.isKeyPressed(GLFW_KEY_1 + i)) {
                 inventory.selectSlot(i);
             }
         }
         
-        // Mouse wheel scrolling
         int dwheel = getScrollDelta();
         if (dwheel > 0) {
             inventory.prevSlot();
@@ -547,9 +527,8 @@ public class Game {
             inventory.nextSlot();
         }
         
-        // Mouse button interactions
         if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS) {
-            if (!leftMousePressed && camera.getGameMode() != GameMode.SPECTATOR) {
+            if (!leftMousePressed && player.getGameMode() != GameMode.SPECTATOR) {
                 breakBlock();
                 leftMousePressed = true;
             }
@@ -558,7 +537,7 @@ public class Game {
         }
         
         if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS) {
-            if (!rightMousePressed && camera.getGameMode() != GameMode.SPECTATOR) {
+            if (!rightMousePressed && player.getGameMode() != GameMode.SPECTATOR) {
                 placeBlock();
                 rightMousePressed = true;
             }
@@ -606,7 +585,7 @@ public class Game {
         
         if (input.isKeyPressed(GLFW_KEY_C)) {
             String coords = String.format("%.2f %.2f %.2f", 
-                camera.getX(), camera.getY(), camera.getZ());
+                player.getX(), player.getY(), player.getZ());
             System.out.println("Coordinates: " + coords);
         }
         
@@ -630,23 +609,23 @@ public class Game {
     }
     
     private void cycleGameMode(int direction) {
-        GameMode current = camera.getGameMode();
+        GameMode current = player.getGameMode();
         GameMode next = direction > 0 ? current.next() : current.previous();
         
         previousGameMode = current;
-        camera.setGameMode(next);
+        player.setGameMode(next);  // ✅ Call player method
         System.out.println("Game mode: " + next.getName());
     }
     
     private void toggleSpectatorMode() {
-        GameMode current = camera.getGameMode();
+        GameMode current = player.getGameMode();
         
         if (current == GameMode.SPECTATOR) {
-            camera.setGameMode(previousGameMode);
+            player.setGameMode(previousGameMode);
             System.out.println("Game mode: " + previousGameMode.getName());
         } else {
             previousGameMode = current;
-            camera.setGameMode(GameMode.SPECTATOR);
+            player.setGameMode(GameMode.SPECTATOR);
             System.out.println("Game mode: Spectator");
         }
     }
@@ -700,9 +679,9 @@ public class Game {
         
         RayCast.RayResult ray = RayCast.cast(
             world,
-            camera.getX(),
-            camera.getY(),
-            camera.getZ(),
+            player.getX(),
+            player.getEyeY(),  // ✅ Use eye height
+            player.getZ(),
             dir[0], dir[1], dir[2],
             REACH_DISTANCE
         );
@@ -720,9 +699,9 @@ public class Game {
         
         RayCast.RayResult ray = RayCast.cast(
             world,
-            camera.getX(),
-            camera.getY(),
-            camera.getZ(),
+            player.getX(),
+            player.getEyeY(),  // ✅ Use eye height
+            player.getZ(),
             dir[0], dir[1], dir[2],
             REACH_DISTANCE
         );
@@ -737,9 +716,9 @@ public class Game {
         
         RayCast.RayResult ray = RayCast.cast(
             world,
-            camera.getX(),
-            camera.getY(),
-            camera.getZ(),
+            player.getX(),
+            player.getEyeY(),  // ✅ Use eye height
+            player.getZ(),
             dir[0], dir[1], dir[2],
             REACH_DISTANCE
         );
@@ -753,9 +732,6 @@ public class Game {
         }
     }
 
-    /**
-     * ✅ FIXED: Cleanup with chat overlay callback removal
-     */
     private void cleanup() {
         System.out.println("===============================================");
         System.out.println("Shutting down...");
@@ -768,7 +744,6 @@ public class Game {
             skyRenderer.cleanup();
         }
         
-        // ✅ Cleanup chat overlay callbacks
         if (chatOverlay != null) {
             chatOverlay.cleanup();
         }
