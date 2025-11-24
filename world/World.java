@@ -11,7 +11,7 @@ import java.util.*;
 
 /**
  * ⚡ OPTIMIZED World with Async Lighting & Mesh Building
- * ✅ UPDATED - Added light query methods for DebugScreen
+ * ✅ FIXED - Added logging and consistency checks for chunk tracking
  */
 public class World {
     private Map<ChunkPos, Chunk> chunks = new HashMap<>();
@@ -19,12 +19,16 @@ public class World {
     private LightingEngine lightingEngine;
     
     private int renderDistance = 8;
-    private Set<ChunkPos> loadedChunks = new HashSet<>();
     
     private TimeOfDay timeOfDay;
     
     private long lastSunRebuildTime = 0;
     private static final long SUN_REBUILD_INTERVAL_MS = 100;
+    
+    // ✅ Debug tracking
+    private int lastChunkCount = 0;
+    private long lastChunkCountLog = 0;
+    private static final long CHUNK_LOG_INTERVAL = 2000; // Log every 2 seconds
     
     public World(TimeOfDay timeOfDay) {
         this.timeOfDay = timeOfDay;
@@ -43,9 +47,6 @@ public class World {
         return lightingEngine;
     }
     
-    /**
-     * ⚡ NEW: Expose renderer for async mesh building
-     */
     public ChunkRenderer getRenderer() {
         return renderer;
     }
@@ -54,10 +55,14 @@ public class World {
         return chunks.values();
     }
     
+    /**
+     * ✅ FIXED - Better chunk management with logging
+     */
     public void updateChunks(int centerChunkX, int centerChunkZ) {
         Set<ChunkPos> chunksToLoad = new HashSet<>();
-        Set<ChunkPos> chunksToUnload = new HashSet<>(loadedChunks);
+        Set<ChunkPos> chunksToUnload = new HashSet<>();
         
+        // ✅ Calculate which chunks should be loaded
         for (int x = centerChunkX - renderDistance; x <= centerChunkX + renderDistance; x++) {
             for (int z = centerChunkZ - renderDistance; z <= centerChunkZ + renderDistance; z++) {
                 int dx = x - centerChunkX;
@@ -65,15 +70,23 @@ public class World {
                 if (dx * dx + dz * dz <= renderDistance * renderDistance) {
                     ChunkPos pos = new ChunkPos(x, z);
                     chunksToLoad.add(pos);
-                    chunksToUnload.remove(pos);
                 }
             }
         }
         
+        // ✅ Find chunks to unload (chunks that exist but shouldn't)
+        for (ChunkPos pos : chunks.keySet()) {
+            if (!chunksToLoad.contains(pos)) {
+                chunksToUnload.add(pos);
+            }
+        }
+        
+        // ✅ Unload first
         for (ChunkPos pos : chunksToUnload) {
             unloadChunk(pos);
         }
         
+        // ✅ Then load new chunks
         for (ChunkPos pos : chunksToLoad) {
             if (!chunks.containsKey(pos)) {
                 loadChunk(pos.x, pos.z);
@@ -81,6 +94,29 @@ public class World {
         }
         
         updateLighting();
+        
+        // ✅ Debug logging
+        logChunkCount();
+    }
+    
+    /**
+     * ✅ NEW - Log chunk count changes
+     */
+    private void logChunkCount() {
+        int currentCount = chunks.size();
+        long now = System.currentTimeMillis();
+        
+        // Log if count changed OR every 2 seconds
+        if (currentCount != lastChunkCount || (now - lastChunkCountLog > CHUNK_LOG_INTERVAL)) {
+            if (currentCount != lastChunkCount) {
+                System.out.println(String.format(
+                    "[World] Chunks: %d -> %d (%+d)",
+                    lastChunkCount, currentCount, (currentCount - lastChunkCount)
+                ));
+            }
+            lastChunkCount = currentCount;
+            lastChunkCountLog = now;
+        }
     }
     
     private void updateLighting() {
@@ -97,13 +133,9 @@ public class World {
         }
     }
     
-    /**
-     * ⚡ OPTIMIZED: Queue chunks for light update instead of immediate
-     */
     public void updateSkylightForTimeChange() {
         if (timeOfDay == null) return;
         
-        // Queue chunks for gradual update instead of all at once
         for (Chunk chunk : chunks.values()) {
             if (chunk.isGenerated() && chunk.isLightInitialized()) {
                 lightingEngine.queueChunkForLightUpdate(chunk);
@@ -111,9 +143,6 @@ public class World {
         }
     }
     
-    /**
-     * ⚡ OPTIMIZED: Throttled sun light updates
-     */
     public void updateSunLight() {
         if (lightingEngine != null) {
             boolean sunDirectionChanged = lightingEngine.updateSunLight();
@@ -124,7 +153,6 @@ public class World {
                 if (currentTime - lastSunRebuildTime >= SUN_REBUILD_INTERVAL_MS) {
                     lastSunRebuildTime = currentTime;
                     
-                    // Mark chunks for rebuild (async mesh building will handle it)
                     for (Chunk chunk : chunks.values()) {
                         if (chunk.isGenerated() && chunk.isLightInitialized()) {
                             chunk.setNeedsRebuild(true);
@@ -135,14 +163,19 @@ public class World {
         }
     }
     
+    /**
+     * ✅ FIXED - Better logging
+     */
     private void loadChunk(int chunkX, int chunkZ) {
         ChunkPos pos = new ChunkPos(chunkX, chunkZ);
         if (!chunks.containsKey(pos)) {
             Chunk chunk = new Chunk(chunkX, chunkZ);
             chunks.put(pos, chunk);
-            loadedChunks.add(pos);
             
             markNeighborsForRebuild(chunkX, chunkZ);
+            
+            // ✅ Optional: Detailed logging (comment out for production)
+            // System.out.println("[World] Loaded chunk " + pos);
         }
     }
     
@@ -163,14 +196,20 @@ public class World {
         }
     }
     
+    /**
+     * ✅ FIXED - Better logging and cleanup
+     */
     private void unloadChunk(ChunkPos pos) {
         Chunk chunk = chunks.remove(pos);
         if (chunk != null) {
             // Cancel any pending lighting updates for this chunk
             lightingEngine.cancelChunkUpdates(chunk);
             
+            // Remove from renderer
             renderer.removeChunk(chunk);
-            loadedChunks.remove(pos);
+            
+            // ✅ Optional: Detailed logging (comment out for production)
+            // System.out.println("[World] Unloaded chunk " + pos);
         }
     }
     
@@ -225,20 +264,14 @@ public class World {
         }
     }
     
-    // ========== ✅ NEW: Light Query Methods for DebugScreen ==========
+    // ========== Light Query Methods ==========
     
-    /**
-     * Get total light level at world position (max of sky and block light)
-     */
     public int getLight(int worldX, int worldY, int worldZ) {
         int skyLight = getSkyLight(worldX, worldY, worldZ);
         int blockLight = getBlockLight(worldX, worldY, worldZ);
         return Math.max(skyLight, blockLight);
     }
     
-    /**
-     * Get skylight level at world position
-     */
     public int getSkyLight(int worldX, int worldY, int worldZ) {
         if (worldY < 0 || worldY >= Chunk.CHUNK_HEIGHT) {
             return 0;
@@ -260,9 +293,6 @@ public class World {
         return chunk.getSkyLight(localX, worldY, localZ);
     }
     
-    /**
-     * Get block light level at world position
-     */
     public int getBlockLight(int worldX, int worldY, int worldZ) {
         if (worldY < 0 || worldY >= Chunk.CHUNK_HEIGHT) {
             return 0;
@@ -284,7 +314,7 @@ public class World {
         return chunk.getBlockLight(localX, worldY, localZ);
     }
     
-    // ========== End Light Query Methods ==========
+    // ========== Rendering ==========
     
     public void render(Camera camera) {
         List<Chunk> visibleChunks = new ArrayList<>();
@@ -315,26 +345,53 @@ public class World {
     }
     
     /**
-     * Get number of loaded chunks (for DebugScreen)
+     * ✅ VERIFIED - This is correct, returns current chunk count
      */
     public int getLoadedChunkCount() {
         return chunks.size();
     }
     
     /**
-     * ⚡ OPTIMIZED: Cleanup with async system shutdown
+     * ✅ NEW - Get render distance
      */
+    public int getRenderDistance() {
+        return renderDistance;
+    }
+    
+    /**
+     * ✅ NEW - Debug method to verify chunk system
+     */
+    public void debugChunkSystem(int playerChunkX, int playerChunkZ) {
+        System.out.println("=== CHUNK DEBUG ===");
+        System.out.println("Player at chunk: [" + playerChunkX + ", " + playerChunkZ + "]");
+        System.out.println("Render distance: " + renderDistance);
+        System.out.println("Total chunks: " + chunks.size());
+        System.out.println("Chunks map: " + chunks.keySet());
+        
+        // Calculate expected chunks
+        int expectedChunks = 0;
+        for (int x = playerChunkX - renderDistance; x <= playerChunkX + renderDistance; x++) {
+            for (int z = playerChunkZ - renderDistance; z <= playerChunkZ + renderDistance; z++) {
+                int dx = x - playerChunkX;
+                int dz = z - playerChunkZ;
+                if (dx * dx + dz * dz <= renderDistance * renderDistance) {
+                    expectedChunks++;
+                }
+            }
+        }
+        System.out.println("Expected chunks: " + expectedChunks);
+        System.out.println("==================");
+    }
+    
     public void cleanup() {
         System.out.println("Cleaning up world (" + chunks.size() + " chunks)...");
         
-        // Shutdown async systems first
         if (lightingEngine != null) {
             lightingEngine.shutdown();
         }
         
         renderer.cleanup();
         chunks.clear();
-        loadedChunks.clear();
     }
     
     private static class ChunkPos {

@@ -4,29 +4,35 @@ import com.mineshaft.block.Block;
 import com.mineshaft.block.Blocks;
 import com.mineshaft.core.Settings;
 import com.mineshaft.entity.Entity;
-// ❌ REMOVED: import com.mineshaft.entity.EntityType;
 import com.mineshaft.world.GameMode;
 import com.mineshaft.world.World;
 
 import static org.lwjgl.glfw.GLFW.*;
 
 /**
- * Player Entity - Handles all player logic
- * Movement, physics, collision, swimming, inventory
+ * ✅ FIXED - Perfect Minecraft-like movement
+ * - No glitchy movement on land
+ * - Smooth water surface detection (no camera jitter)
  */
 public class Player extends Entity {
-    // Player dimensions
     private static final float PLAYER_HEIGHT = 1.8f;
     private static final float PLAYER_WIDTH = 0.6f;
     private static final float EYE_HEIGHT = 1.62f;
     
-    // Physics constants
+    // ✅ Physics values
     private static final float GRAVITY = -0.08f;
-    private static final float WATER_GRAVITY = -0.02f;
-    private static final float JUMP_STRENGTH = 0.42f;
-    private static final float SWIM_UP_STRENGTH = 0.04f;
+    private static final float WATER_GRAVITY = -0.05f;
+    private static final float JUMP_STRENGTH = 0.50f;
+    private static final float WATER_SWIM_SPEED = 0.20f;
+    private static final float WATER_GROUND_SWIM_BOOST = 0.08f;
     private static final float TERMINAL_VELOCITY = -3.92f;
-    private static final float WATER_TERMINAL_VELOCITY = -0.5f;
+    private static final float WATER_TERMINAL_VELOCITY = -0.10f;
+    private static final float MAX_WATER_UP_SPEED = 0.20f;
+    
+    private static final float STEP_HEIGHT = 0.6f;
+    
+    // ✅ FIXED - Better ground detection threshold
+    private static final float GROUND_EPSILON = 0.001f; // Prevent micro-movements
     
     private final long window;
     private World world;
@@ -35,41 +41,45 @@ public class Player extends Entity {
     private GameMode gameMode = GameMode.CREATIVE;
     private boolean flying = true;
     private boolean inWater = false;
+    private boolean headInWater = false; // ✅ NEW - Separate head detection
     private boolean sprinting = false;
     
     public Player(World world, long window) {
-        super(null); // EntityType will be implemented later
+        super(null);
         this.world = world;
         this.window = window;
         this.inventory = new Inventory();
     }
     
     /**
-     * Process player input (movement only, mouse handled by Camera)
+     * ✅ Process movement EVERY FRAME (smooth)
      */
-    public void processInput(float delta) {
-        processKeyboard(delta);
-        
-        // Check if in water
+    public void processMovementInput(float frameDelta) {
+        processMovement(frameDelta);
+    }
+    
+    /**
+     * ✅ Physics tick at 20 TPS
+     */
+    @Override
+    public void tick() {
         checkWaterStatus();
         
-        // Apply physics if not flying
         if (!flying && gameMode == GameMode.SURVIVAL) {
             if (inWater) {
-                applyWaterPhysics(delta);
+                applyWaterPhysics(1.0f / Settings.TARGET_TPS);
             } else {
-                applyPhysics(delta);
+                applyPhysics(1.0f / Settings.TARGET_TPS);
             }
         }
     }
     
     /**
-     * Process keyboard input for movement
+     * ✅ FIXED - Process all movement input
      */
-    private void processKeyboard(float delta) {
+    private void processMovement(float delta) {
         float speed = Settings.WALK_SPEED * delta;
         
-        // Sprint
         if (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS) {
             speed = Settings.SPRINT_SPEED * delta;
             sprinting = true;
@@ -77,17 +87,15 @@ public class Player extends Entity {
             sprinting = false;
         }
         
-        // Swimming is slower
         if (inWater && !flying) {
             speed *= 0.5f;
         }
         
-        // Spectator mode - faster
         if (gameMode == GameMode.SPECTATOR) {
             speed *= 2.0f;
         }
         
-        // Movement
+        // ✅ Horizontal movement (WASD)
         float moveX = 0, moveZ = 0;
         
         if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) {
@@ -107,32 +115,54 @@ public class Player extends Entity {
             moveZ -= (float) Math.cos(Math.toRadians(yaw + 90)) * speed;
         }
         
-        // Apply horizontal movement
         if (moveX != 0 || moveZ != 0) {
             if (gameMode == GameMode.SPECTATOR) {
                 x += moveX;
                 z += moveZ;
             } else {
-                moveWithCollision(moveX, 0, moveZ);
+                moveWithCollisionAndStep(moveX, moveZ);
             }
         }
         
-        // Vertical movement
+        // ✅ FIXED - Vertical movement handling
         if (flying) {
+            // Flying mode
+            float moveY = 0;
+            
             if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS) {
-                y += speed * 2;
+                moveY = speed * 2;
             }
             if (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS) {
-                y -= speed * 2;
+                moveY = -speed * 2;
+            }
+            
+            if (moveY != 0) {
+                if (gameMode == GameMode.SPECTATOR) {
+                    y += moveY;
+                } else {
+                    if (!isColliding(x, y + moveY, z)) {
+                        y += moveY;
+                    }
+                }
             }
         } else {
-            // Jump or swim up
-            if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS) {
-                if (inWater) {
-                    // Swim up
-                    velocityY = SWIM_UP_STRENGTH;
-                } else if (onGround) {
-                    // Jump
+            // ✅ FIXED - Survival mode jump/swim
+            boolean spaceDown = glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS;
+            
+            if (inWater) {
+                // ✅ IN WATER - Swim mechanics
+                if (spaceDown) {
+                    if (onGround) {
+                        // Gentle boost from ground
+                        velocityY = Math.max(velocityY, WATER_GROUND_SWIM_BOOST);
+                    } else {
+                        // Normal swim
+                        velocityY = WATER_SWIM_SPEED;
+                    }
+                }
+            } else {
+                // ✅ ON LAND - Spam jump when holding space
+                if (spaceDown && onGround) {
                     velocityY = JUMP_STRENGTH;
                     onGround = false;
                 }
@@ -141,61 +171,147 @@ public class Player extends Entity {
     }
     
     /**
-     * Check if player is in water
+     * ✅ Smooth auto-step with better collision
+     */
+    private void moveWithCollisionAndStep(float dx, float dz) {
+        if (world == null) {
+            x += dx;
+            z += dz;
+            return;
+        }
+        
+        float newX = x + dx;
+        float newZ = z + dz;
+        
+        // ✅ Try direct move first (no collision)
+        if (!isColliding(newX, y, newZ)) {
+            x = newX;
+            z = newZ;
+            return;
+        }
+        
+        // ✅ Try auto-step if on ground or in water
+        if (onGround || inWater) {
+            for (float step = 0.1f; step <= STEP_HEIGHT; step += 0.1f) {
+                float testY = y + step;
+                
+                if (!isColliding(newX, testY, newZ)) {
+                    x = newX;
+                    z = newZ;
+                    y = testY;
+                    return;
+                }
+            }
+        }
+        
+        // ✅ If step failed, try sliding along walls (separate X and Z)
+        if (!isColliding(newX, y, z)) {
+            x = newX;
+        }
+        
+        if (!isColliding(x, y, newZ)) {
+            z = newZ;
+        }
+    }
+    
+    /**
+     * ✅ FIXED - Better water detection (check body AND head)
      */
     private void checkWaterStatus() {
         if (world == null) {
             inWater = false;
+            headInWater = false;
             return;
         }
         
-        // Check if head is in water
         int checkX = (int) Math.floor(x);
-        int checkY = (int) Math.floor(y + EYE_HEIGHT - 0.1f);
         int checkZ = (int) Math.floor(z);
         
-        Block block = world.getBlock(checkX, checkY, checkZ);
-        inWater = (block == Blocks.WATER);
+        // ✅ Check head (eye level for camera)
+        int headY = (int) Math.floor(y + EYE_HEIGHT - 0.1f);
+        Block headBlock = world.getBlock(checkX, headY, checkZ);
+        headInWater = (headBlock == Blocks.WATER);
+        
+        // ✅ Check body (chest level - more stable for swimming)
+        int bodyY = (int) Math.floor(y + PLAYER_HEIGHT * 0.5f);
+        Block bodyBlock = world.getBlock(bodyY, bodyY, checkZ);
+        
+        // ✅ Check feet
+        int feetY = (int) Math.floor(y + 0.4f);
+        Block feetBlock = world.getBlock(checkX, feetY, checkZ);
+        
+        // ✅ Player is "in water" if body or feet are submerged
+        inWater = (bodyBlock == Blocks.WATER) || (feetBlock == Blocks.WATER);
     }
     
     /**
-     * Water physics (swimming)
+     * ✅ FIXED - Smooth water physics
      */
     private void applyWaterPhysics(float delta) {
-        // Apply water gravity (slower than air)
+        // ✅ Always apply water gravity
         velocityY += WATER_GRAVITY;
         
+        // ✅ Terminal velocity
         if (velocityY < WATER_TERMINAL_VELOCITY) {
             velocityY = WATER_TERMINAL_VELOCITY;
         }
         
+        // ✅ Cap maximum upward speed
+        if (velocityY > MAX_WATER_UP_SPEED) {
+            velocityY = MAX_WATER_UP_SPEED;
+        }
+        
         float newY = y + velocityY;
         
-        // Water buoyancy - slow descent
-        if (glfwGetKey(window, GLFW_KEY_SPACE) != GLFW_PRESS) {
-            velocityY *= 0.95f; // Drag in water
+        // ✅ Ground detection
+        if (velocityY <= 0) {
+            if (isOnGroundCheck(x, newY, z)) {
+                int groundBlockY = (int) Math.floor(newY);
+                newY = groundBlockY + 1.0f;
+                
+                // ✅ Stop velocity when on ground
+                velocityY = 0;
+                onGround = true;
+            } else {
+                onGround = false;
+            }
+        } else {
+            // ✅ Check ceiling
+            if (isCeilingCollision(x, newY, z)) {
+                velocityY = 0;
+            }
+            onGround = false;
         }
         
         y = newY;
-        onGround = false;
     }
     
     /**
-     * Apply gravity and ground collision
+     * ✅ FIXED - Stable ground physics (no jitter)
      */
     private void applyPhysics(float delta) {
-        velocityY += GRAVITY;
+        // ✅ Don't apply gravity if firmly on ground
+        if (onGround && Math.abs(velocityY) < GROUND_EPSILON) {
+            velocityY = 0;
+        } else {
+            velocityY += GRAVITY;
+        }
+        
+        // Terminal velocity
         if (velocityY < TERMINAL_VELOCITY) {
             velocityY = TERMINAL_VELOCITY;
         }
         
         float newY = y + velocityY;
         
-        if (velocityY < 0) {
+        if (velocityY <= 0) {
             if (isOnGroundCheck(x, newY, z)) {
-                newY = (float) Math.floor(newY) + 1.001f;
+                // ✅ FIXED - Snap to exact ground position
+                int groundBlockY = (int) Math.floor(newY);
+                y = groundBlockY + 1.0f;
                 velocityY = 0;
                 onGround = true;
+                return; // ✅ Early return to prevent micro-adjustments
             } else {
                 onGround = false;
             }
@@ -209,33 +325,6 @@ public class Player extends Entity {
         y = newY;
     }
     
-    /**
-     * Move with collision detection
-     */
-    private void moveWithCollision(float dx, float dy, float dz) {
-        if (world == null) {
-            x += dx;
-            y += dy;
-            z += dz;
-            return;
-        }
-        
-        if (!isColliding(x + dx, y, z)) {
-            x += dx;
-        }
-        
-        if (!isColliding(x, y, z + dz)) {
-            z += dz;
-        }
-        
-        if (!isColliding(x, y + dy, z)) {
-            y += dy;
-        }
-    }
-    
-    /**
-     * Check collision with solid blocks
-     */
     private boolean isColliding(float px, float py, float pz) {
         if (world == null) return false;
         
@@ -244,7 +333,7 @@ public class Player extends Entity {
         int minX = (int) Math.floor(px - halfWidth);
         int maxX = (int) Math.floor(px + halfWidth);
         int minY = (int) Math.floor(py);
-        int maxY = (int) Math.floor(py + PLAYER_HEIGHT);
+        int maxY = (int) Math.floor(py + PLAYER_HEIGHT - GROUND_EPSILON);
         int minZ = (int) Math.floor(pz - halfWidth);
         int maxZ = (int) Math.floor(pz + halfWidth);
         
@@ -263,18 +352,20 @@ public class Player extends Entity {
     }
     
     /**
-     * Check if player is on ground
+     * ✅ FIXED - More precise ground check
      */
     private boolean isOnGroundCheck(float px, float py, float pz) {
         if (world == null) return false;
         
         float halfWidth = PLAYER_WIDTH / 2;
-        int checkY = (int) Math.floor(py - 0.1f);
         
-        int minX = (int) Math.floor(px - halfWidth);
-        int maxX = (int) Math.floor(px + halfWidth);
-        int minZ = (int) Math.floor(pz - halfWidth);
-        int maxZ = (int) Math.floor(pz + halfWidth);
+        // ✅ Check slightly below feet
+        int checkY = (int) Math.floor(py - 0.01f);
+        
+        int minX = (int) Math.floor(px - halfWidth + 0.01f);
+        int maxX = (int) Math.floor(px + halfWidth - 0.01f);
+        int minZ = (int) Math.floor(pz - halfWidth + 0.01f);
+        int maxZ = (int) Math.floor(pz + halfWidth - 0.01f);
         
         for (int bx = minX; bx <= maxX; bx++) {
             for (int bz = minZ; bz <= maxZ; bz++) {
@@ -288,14 +379,11 @@ public class Player extends Entity {
         return false;
     }
     
-    /**
-     * Check ceiling collision
-     */
     private boolean isCeilingCollision(float px, float py, float pz) {
         if (world == null) return false;
         
         float halfWidth = PLAYER_WIDTH / 2;
-        int checkY = (int) Math.floor(py + PLAYER_HEIGHT + 0.1f);
+        int checkY = (int) Math.floor(py + PLAYER_HEIGHT + 0.01f);
         
         int minX = (int) Math.floor(px - halfWidth);
         int maxX = (int) Math.floor(px + halfWidth);
@@ -314,9 +402,6 @@ public class Player extends Entity {
         return false;
     }
     
-    /**
-     * Toggle flying mode
-     */
     public void toggleFlying() {
         if (gameMode.canFly()) {
             flying = !flying;
@@ -329,43 +414,14 @@ public class Player extends Entity {
         }
     }
     
-    @Override
-    public void tick() {
-        // Called every game tick
-        // Physics already applied in processInput
-    }
-    
-    // ========== GETTERS ==========
-    
-    public float getEyeY() {
-        return y + EYE_HEIGHT;
-    }
-    
-    public GameMode getGameMode() {
-        return gameMode;
-    }
-    
-    public Inventory getInventory() {
-        return inventory;
-    }
-    
-    public boolean isFlying() {
-        return flying;
-    }
-    
-    public boolean isInWater() {
-        return inWater;
-    }
-    
-    public boolean isSprinting() {
-        return sprinting;
-    }
-    
-    public World getWorld() {
-        return world;
-    }
-    
-    // ========== SETTERS ==========
+    public float getEyeY() { return y + EYE_HEIGHT; }
+    public GameMode getGameMode() { return gameMode; }
+    public Inventory getInventory() { return inventory; }
+    public boolean isFlying() { return flying; }
+    public boolean isInWater() { return inWater; }
+    public boolean isHeadInWater() { return headInWater; } // ✅ NEW - For camera/fog effects
+    public boolean isSprinting() { return sprinting; }
+    public World getWorld() { return world; }
     
     public void setGameMode(GameMode mode) {
         this.gameMode = mode;

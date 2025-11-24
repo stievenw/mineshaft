@@ -8,14 +8,15 @@ import com.mineshaft.core.Settings;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.system.MemoryStack;
 
+import java.lang.management.ManagementFactory;
+import com.sun.management.OperatingSystemMXBean;
 import java.nio.IntBuffer;
 
 import static org.lwjgl.glfw.GLFW.*;
 import static org.lwjgl.opengl.GL11.*;
 
 /**
- * ✅ Minecraft-style F3 Debug Screen
- * Shows detailed game information on left and right side
+ * ✅ FIXED - No deprecated warnings, Java 14+ compatible
  */
 public class DebugScreen {
     
@@ -29,27 +30,62 @@ public class DebugScreen {
     private int windowWidth;
     private int windowHeight;
     
-    // Performance tracking
+    // Memory tracking
     private long lastMemoryCheck = 0;
-    private long usedMemory = 0;
-    private long maxMemory = 0;
+    private long usedMemoryMB = 0;
+    private long allocatedMemoryMB = 0;
+    private long maxMemoryMB = 0;
+    private long systemTotalRAM = 0;
+    private long systemFreeRAM = 0;
     private int memoryPercent = 0;
     
-    private static final int LINE_HEIGHT = 10;
-    private static final int MARGIN = 4;
+    private static final int LINE_HEIGHT = 18;
+    private static final int MARGIN = 8;
+    private static final float FONT_SCALE = 2.0f;
     
     public DebugScreen(long window) {
         this.window = window;
         this.font = new SimpleFont();
         
         updateWindowSize();
+        getSystemRAM();
         
-        System.out.println("[DebugScreen] Initialized");
+        System.out.println("[DebugScreen] Initialized with system RAM tracking");
     }
     
     /**
-     * Update window size (call when window resizes)
+     * ✅ FIXED - Use non-deprecated methods
      */
+    private void getSystemRAM() {
+        try {
+            OperatingSystemMXBean osBean = 
+                (OperatingSystemMXBean) ManagementFactory.getOperatingSystemMXBean();
+            
+            // ✅ Use getTotalMemorySize() instead of getTotalPhysicalMemorySize()
+            systemTotalRAM = osBean.getTotalMemorySize() / (1024 * 1024); // MB
+            
+            System.out.println("[DebugScreen] System RAM: " + systemTotalRAM + " MB");
+        } catch (NoSuchMethodError e) {
+            // ✅ Fallback for older Java versions
+            try {
+                OperatingSystemMXBean osBean = 
+                    (OperatingSystemMXBean) ManagementFactory.getOperatingSystemMXBean();
+                
+                @SuppressWarnings("deprecation")
+                long totalRAM = osBean.getTotalPhysicalMemorySize() / (1024 * 1024);
+                systemTotalRAM = totalRAM;
+                
+                System.out.println("[DebugScreen] System RAM (legacy): " + systemTotalRAM + " MB");
+            } catch (Exception ex) {
+                System.err.println("[DebugScreen] Could not get system RAM: " + ex.getMessage());
+                systemTotalRAM = 0;
+            }
+        } catch (Exception e) {
+            System.err.println("[DebugScreen] Could not get system RAM: " + e.getMessage());
+            systemTotalRAM = 0;
+        }
+    }
+    
     private void updateWindowSize() {
         try (MemoryStack stack = MemoryStack.stackPush()) {
             IntBuffer width = stack.mallocInt(1);
@@ -62,57 +98,29 @@ public class DebugScreen {
         }
     }
     
-    /**
-     * Toggle debug screen visibility
-     */
     public void toggle() {
         visible = !visible;
         System.out.println("Debug screen: " + (visible ? "ON" : "OFF"));
     }
     
-    /**
-     * Toggle hitbox rendering
-     */
     public void toggleHitboxes() {
         showHitboxes = !showHitboxes;
         System.out.println("Hitboxes: " + (showHitboxes ? "ON" : "OFF"));
     }
     
-    /**
-     * Toggle chunk border rendering
-     */
     public void toggleChunkBorders() {
         showChunkBorders = !showChunkBorders;
         System.out.println("Chunk borders: " + (showChunkBorders ? "ON" : "OFF"));
     }
     
-    /**
-     * Main render method
-     */
-    public void render(Camera camera, World world, GameMode gameMode, int fps, int tps) {
+    public void render(Camera camera, World world, GameMode gameMode, int fps, int tps, boolean vsyncEnabled) {
         if (!visible) return;
         
         updateWindowSize();
         updateMemoryStats();
         
-        // Setup 2D orthographic projection
-        setup2D();
+        glPushAttrib(GL_ALL_ATTRIB_BITS);
         
-        // Render semi-transparent background
-        renderBackground();
-        
-        // Render debug info
-        renderLeftSide(camera, world, gameMode, fps, tps);
-        renderRightSide();
-        
-        // Restore 3D perspective
-        restore3D();
-    }
-    
-    /**
-     * Setup 2D rendering mode
-     */
-    private void setup2D() {
         glMatrixMode(GL_PROJECTION);
         glPushMatrix();
         glLoadIdentity();
@@ -124,106 +132,62 @@ public class DebugScreen {
         
         glDisable(GL_DEPTH_TEST);
         glDisable(GL_LIGHTING);
+        glDisable(GL_TEXTURE_2D);
+        glDisable(GL_CULL_FACE);
+        
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    }
-    
-    /**
-     * Restore 3D rendering mode
-     */
-    private void restore3D() {
+        
+        renderLeftSide(camera, world, gameMode, fps, tps);
+        renderRightSide(vsyncEnabled);
+        
         glMatrixMode(GL_PROJECTION);
         glPopMatrix();
-        
         glMatrixMode(GL_MODELVIEW);
         glPopMatrix();
         
-        glEnable(GL_DEPTH_TEST);
+        glPopAttrib();
     }
     
-    /**
-     * Render semi-transparent background
-     */
-    private void renderBackground() {
-        glDisable(GL_TEXTURE_2D);
-        glColor4f(0.0f, 0.0f, 0.0f, 0.5f);
-        
-        // Left panel
-        glBegin(GL_QUADS);
-        glVertex2f(0, 0);
-        glVertex2f(windowWidth / 2.0f, 0);
-        glVertex2f(windowWidth / 2.0f, windowHeight / 2.0f);
-        glVertex2f(0, windowHeight / 2.0f);
-        glEnd();
-        
-        // Right panel
-        glBegin(GL_QUADS);
-        glVertex2f(windowWidth / 2.0f, 0);
-        glVertex2f(windowWidth, 0);
-        glVertex2f(windowWidth, windowHeight / 2.0f);
-        glVertex2f(windowWidth / 2.0f, windowHeight / 2.0f);
-        glEnd();
-        
-        glEnable(GL_TEXTURE_2D);
-        glColor4f(1, 1, 1, 1);
-    }
-    
-    /**
-     * Render left side debug info (like Minecraft F3 left)
-     */
     private void renderLeftSide(Camera camera, World world, GameMode gameMode, int fps, int tps) {
         float x = MARGIN;
         float y = MARGIN;
         
-        // Title
         drawText("Mineshaft " + Settings.VERSION, x, y, 1, 1, 1);
         y += LINE_HEIGHT;
-        
-        // Separator
         y += 2;
         
-        // FPS & TPS
         drawText(String.format("FPS: %d | TPS: %d", fps, tps), x, y, 1, 1, 0);
         y += LINE_HEIGHT;
-        
-        // Separator
         y += 2;
         
-        // Position
         drawText(String.format("XYZ: %.3f / %.3f / %.3f", 
             camera.getX(), camera.getY(), camera.getZ()), x, y, 1, 1, 1);
         y += LINE_HEIGHT;
         
-        // Block position
         int blockX = (int) Math.floor(camera.getX());
         int blockY = (int) Math.floor(camera.getY());
         int blockZ = (int) Math.floor(camera.getZ());
         drawText(String.format("Block: %d %d %d", blockX, blockY, blockZ), x, y, 1, 1, 1);
         y += LINE_HEIGHT;
         
-        // Chunk position
         int chunkX = blockX >> 4;
         int chunkZ = blockZ >> 4;
-        int chunkLocalX = blockX & 15;
-        int chunkLocalZ = blockZ & 15;
-        drawText(String.format("Chunk: %d %d %d in %d %d", 
-            chunkLocalX, blockY, chunkLocalZ, chunkX, chunkZ), x, y, 1, 1, 1);
-        y += LINE_HEIGHT;
+        int localX = blockX & 15;
+        int localZ = blockZ & 15;
         
-        // Separator
+        drawText(String.format("Chunk: %d %d in %d %d", 
+            localX, localZ, chunkX, chunkZ), x, y, 1, 1, 1);
+        y += LINE_HEIGHT;
         y += 2;
         
-        // Rotation
         drawText(String.format("Facing: %s (%.1f / %.1f)", 
             getCardinalDirection(camera.getYaw()), 
             camera.getYaw(), 
             camera.getPitch()), x, y, 1, 1, 1);
         y += LINE_HEIGHT;
-        
-        // Separator
         y += 2;
         
-        // Light level (if in world)
         if (world != null) {
             int lightLevel = world.getLight(blockX, blockY, blockZ);
             int skyLight = world.getSkyLight(blockX, blockY, blockZ);
@@ -233,15 +197,11 @@ public class DebugScreen {
                 lightLevel, skyLight, blockLight), x, y, 1, 1, 0);
             y += LINE_HEIGHT;
         }
-        
-        // Separator
         y += 2;
         
-        // Game mode
         drawText("Game Mode: " + gameMode.getName(), x, y, 0.5f, 1, 0.5f);
         y += LINE_HEIGHT;
         
-        // Player state
         String state = "Walking";
         if (camera.getPlayer().isFlying()) {
             state = "Flying";
@@ -252,31 +212,21 @@ public class DebugScreen {
         }
         drawText("State: " + state, x, y, 0.5f, 1, 0.5f);
         y += LINE_HEIGHT;
-        
-        // Separator
         y += 2;
         
-        // Biome (placeholder)
         drawText("Biome: Plains", x, y, 0.5f, 1, 1);
         y += LINE_HEIGHT;
-        
-        // Separator
         y += 2;
         
-        // Render distance
         int renderDistance = Settings.RENDER_DISTANCE;
         drawText(String.format("Render Distance: %d chunks", renderDistance), x, y, 1, 1, 1);
         y += LINE_HEIGHT;
         
-        // Loaded chunks
         int loadedChunks = world != null ? world.getLoadedChunkCount() : 0;
         drawText(String.format("Loaded Chunks: %d", loadedChunks), x, y, 1, 1, 1);
         y += LINE_HEIGHT;
-        
-        // Separator
         y += 2;
         
-        // Debug flags
         if (showChunkBorders) {
             drawText("Chunk Borders: ON", x, y, 1, 0.5f, 0.5f);
             y += LINE_HEIGHT;
@@ -288,165 +238,170 @@ public class DebugScreen {
         }
     }
     
-    /**
-     * Render right side debug info (like Minecraft F3 right)
-     */
-    private void renderRightSide() {
-        float x = windowWidth / 2.0f + MARGIN;
+    private void renderRightSide(boolean vsyncEnabled) {
         float y = MARGIN;
         
-        // Java version
         String javaVersion = System.getProperty("java.version");
-        drawText("Java: " + javaVersion, x, y, 1, 1, 1);
+        drawTextRight("Java: " + javaVersion, y, 1, 1, 1);
         y += LINE_HEIGHT;
-        
-        // Separator
         y += 2;
         
-        // Memory usage
-        drawText(String.format("Mem: %d%% %dMB / %dMB", 
-            memoryPercent, usedMemory, maxMemory), x, y, 1, 1, 0);
+        // System RAM
+        if (systemTotalRAM > 0) {
+            long systemUsedRAM = systemTotalRAM - systemFreeRAM;
+            drawTextRight(String.format("System RAM: %d / %d MB", 
+                systemUsedRAM, systemTotalRAM), y, 0.7f, 0.7f, 0.7f);
+            y += LINE_HEIGHT;
+        }
+        
+        // JVM Memory
+        drawTextRight(String.format("Java Mem: %d / %d MB (%d%%)", 
+            usedMemoryMB, allocatedMemoryMB, memoryPercent), y, 1, 1, 0);
         y += LINE_HEIGHT;
         
-        // Memory bar
-        renderMemoryBar(x, y, 150, 8);
-        y += LINE_HEIGHT + 2;
-        
-        // Separator
-        y += 2;
-        
-        // Allocated memory
-        long totalMemory = Runtime.getRuntime().totalMemory() / 1024 / 1024;
-        drawText(String.format("Allocated: %dMB", totalMemory), x, y, 0.7f, 0.7f, 0.7f);
+        drawTextRight(String.format("Java Max: %d MB", maxMemoryMB), y, 0.8f, 0.8f, 0);
         y += LINE_HEIGHT;
         
-        // Separator
+        drawMemoryBar(y);
+        y += LINE_HEIGHT;
         y += 2;
         
-        // OpenGL info
         String glVersion = GL11.glGetString(GL11.GL_VERSION);
-        drawText("OpenGL: " + (glVersion != null ? glVersion : "Unknown"), x, y, 1, 1, 1);
+        drawTextRight("OpenGL: " + (glVersion != null ? glVersion : "Unknown"), y, 1, 1, 1);
         y += LINE_HEIGHT;
         
         String glRenderer = GL11.glGetString(GL11.GL_RENDERER);
         if (glRenderer != null && glRenderer.length() > 40) {
             glRenderer = glRenderer.substring(0, 37) + "...";
         }
-        drawText("GPU: " + (glRenderer != null ? glRenderer : "Unknown"), x, y, 1, 1, 1);
+        drawTextRight("GPU: " + (glRenderer != null ? glRenderer : "Unknown"), y, 1, 1, 1);
         y += LINE_HEIGHT;
-        
-        // Separator
         y += 2;
         
-        // Display info
-        drawText(String.format("Display: %dx%d", windowWidth, windowHeight), x, y, 1, 1, 1);
+        drawTextRight(String.format("Display: %dx%d", windowWidth, windowHeight), y, 1, 1, 1);
         y += LINE_HEIGHT;
         
-        // VSync
-        drawText("VSync: " + (Settings.VSYNC ? "ON" : "OFF"), x, y, 1, 1, 1);
+        drawTextRight("VSync: " + (vsyncEnabled ? "ON" : "OFF"), y, 1, 1, 1);
         y += LINE_HEIGHT;
-        
-        // Separator
         y += 2;
         
-        // CPU info
         int cores = Runtime.getRuntime().availableProcessors();
-        drawText(String.format("CPU: %d cores", cores), x, y, 1, 1, 1);
+        drawTextRight(String.format("CPU: %d cores", cores), y, 1, 1, 1);
         y += LINE_HEIGHT;
-        
-        // Separator
         y += 2;
         
-        // OS info
         String os = System.getProperty("os.name");
         String arch = System.getProperty("os.arch");
-        drawText(String.format("OS: %s (%s)", os, arch), x, y, 0.7f, 0.7f, 0.7f);
+        drawTextRight(String.format("OS: %s (%s)", os, arch), y, 0.7f, 0.7f, 0.7f);
         y += LINE_HEIGHT;
-        
-        // Separator
         y += 2;
         
-        // Help text
-        y = windowHeight / 2.0f - LINE_HEIGHT * 6;
-        drawText("F3 + Q = Help", x, y, 0.5f, 0.5f, 0.5f);
-        y += LINE_HEIGHT;
-        drawText("F3 + A = Reload chunks", x, y, 0.5f, 0.5f, 0.5f);
-        y += LINE_HEIGHT;
-        drawText("F3 + B = Hitboxes", x, y, 0.5f, 0.5f, 0.5f);
-        y += LINE_HEIGHT;
-        drawText("F3 + G = Chunk borders", x, y, 0.5f, 0.5f, 0.5f);
-        y += LINE_HEIGHT;
-        drawText("F3 + N = Gamemode", x, y, 0.5f, 0.5f, 0.5f);
-        y += LINE_HEIGHT;
+        float helpY = windowHeight - LINE_HEIGHT * 7;
+        drawTextRight("F3 + Q = Help", helpY, 0.5f, 0.5f, 0.5f);
+        helpY += LINE_HEIGHT;
+        drawTextRight("F3 + A = Reload chunks", helpY, 0.5f, 0.5f, 0.5f);
+        helpY += LINE_HEIGHT;
+        drawTextRight("F3 + B = Hitboxes", helpY, 0.5f, 0.5f, 0.5f);
+        helpY += LINE_HEIGHT;
+        drawTextRight("F3 + G = Chunk borders", helpY, 0.5f, 0.5f, 0.5f);
+        helpY += LINE_HEIGHT;
+        drawTextRight("F3 + N = Gamemode", helpY, 0.5f, 0.5f, 0.5f);
     }
     
-    /**
-     * Render memory usage bar
-     */
-    private void renderMemoryBar(float x, float y, float width, float height) {
-        glDisable(GL_TEXTURE_2D);
+    private void drawMemoryBar(float y) {
+        int barWidth = 200;
+        int barHeight = 10;
+        float x = windowWidth - barWidth - MARGIN;
         
-        // Background (dark gray)
+        glDisable(GL_TEXTURE_2D);
         glColor4f(0.2f, 0.2f, 0.2f, 0.8f);
         glBegin(GL_QUADS);
         glVertex2f(x, y);
-        glVertex2f(x + width, y);
-        glVertex2f(x + width, y + height);
-        glVertex2f(x, y + height);
+        glVertex2f(x + barWidth, y);
+        glVertex2f(x + barWidth, y + barHeight);
+        glVertex2f(x, y + barHeight);
         glEnd();
         
-        // Memory bar (gradient: green -> yellow -> red)
-        float percent = memoryPercent / 100.0f;
-        float barWidth = width * percent;
+        float usedWidth = (barWidth * memoryPercent) / 100.0f;
         
-        float r = Math.min(1.0f, percent * 2);
-        float g = Math.min(1.0f, 2 - percent * 2);
+        float r = 1.0f;
+        float g = 1.0f;
         float b = 0.0f;
+        
+        if (memoryPercent > 80) {
+            g = 0.3f;
+        } else if (memoryPercent > 60) {
+            g = 0.7f;
+        }
         
         glColor4f(r, g, b, 0.9f);
         glBegin(GL_QUADS);
         glVertex2f(x, y);
-        glVertex2f(x + barWidth, y);
-        glVertex2f(x + barWidth, y + height);
-        glVertex2f(x, y + height);
+        glVertex2f(x + usedWidth, y);
+        glVertex2f(x + usedWidth, y + barHeight);
+        glVertex2f(x, y + barHeight);
         glEnd();
         
-        // Border
-        glColor4f(1, 1, 1, 0.5f);
+        glColor4f(1, 1, 1, 1);
+        glLineWidth(1);
         glBegin(GL_LINE_LOOP);
         glVertex2f(x, y);
-        glVertex2f(x + width, y);
-        glVertex2f(x + width, y + height);
-        glVertex2f(x, y + height);
+        glVertex2f(x + barWidth, y);
+        glVertex2f(x + barWidth, y + barHeight);
+        glVertex2f(x, y + barHeight);
         glEnd();
-        
-        glEnable(GL_TEXTURE_2D);
-        glColor4f(1, 1, 1, 1);
     }
     
     /**
-     * Update memory statistics
+     * ✅ FIXED - Use non-deprecated methods
      */
     private void updateMemoryStats() {
         long now = System.currentTimeMillis();
-        if (now - lastMemoryCheck < 500) return; // Update every 500ms
+        if (now - lastMemoryCheck < 500) return;
         
         lastMemoryCheck = now;
         
         Runtime runtime = Runtime.getRuntime();
-        long totalMemory = runtime.totalMemory();
-        long freeMemory = runtime.freeMemory();
+        
+        long totalMemoryBytes = runtime.totalMemory();
+        long freeMemoryBytes = runtime.freeMemory();
         long maxMemoryBytes = runtime.maxMemory();
+        long usedMemoryBytes = totalMemoryBytes - freeMemoryBytes;
         
-        usedMemory = (totalMemory - freeMemory) / 1024 / 1024; // MB
-        maxMemory = maxMemoryBytes / 1024 / 1024; // MB
+        usedMemoryMB = usedMemoryBytes / (1024 * 1024);
+        allocatedMemoryMB = totalMemoryBytes / (1024 * 1024);
+        maxMemoryMB = maxMemoryBytes / (1024 * 1024);
         
-        memoryPercent = (int) ((usedMemory * 100) / maxMemory);
+        if (allocatedMemoryMB > 0) {
+            memoryPercent = (int) ((usedMemoryMB * 100) / allocatedMemoryMB);
+        } else {
+            memoryPercent = 0;
+        }
+        
+        // ✅ Update system RAM with non-deprecated method
+        try {
+            OperatingSystemMXBean osBean = 
+                (OperatingSystemMXBean) ManagementFactory.getOperatingSystemMXBean();
+            
+            // ✅ Use getFreeMemorySize() instead of getFreePhysicalMemorySize()
+            systemFreeRAM = osBean.getFreeMemorySize() / (1024 * 1024);
+        } catch (NoSuchMethodError e) {
+            // ✅ Fallback for older Java versions
+            try {
+                OperatingSystemMXBean osBean = 
+                    (OperatingSystemMXBean) ManagementFactory.getOperatingSystemMXBean();
+                
+                @SuppressWarnings("deprecation")
+                long freeRAM = osBean.getFreePhysicalMemorySize() / (1024 * 1024);
+                systemFreeRAM = freeRAM;
+            } catch (Exception ex) {
+                // Ignore
+            }
+        } catch (Exception e) {
+            // Ignore
+        }
     }
     
-    /**
-     * Get cardinal direction from yaw
-     */
     private String getCardinalDirection(float yaw) {
         yaw = yaw % 360;
         if (yaw < 0) yaw += 360;
@@ -463,14 +418,16 @@ public class DebugScreen {
         return "Unknown";
     }
     
-    /**
-     * Draw text using SimpleFont
-     */
     private void drawText(String text, float x, float y, float r, float g, float b) {
-        font.drawStringWithShadow(text, x, y, r, g, b, 1.0f);
+        font.drawStringWithShadow(text, x, y, r, g, b, 1.0f, FONT_SCALE);
     }
     
-    // Getters
+    private void drawTextRight(String text, float y, float r, float g, float b) {
+        int textWidth = font.getStringWidth(text, FONT_SCALE);
+        float x = windowWidth - textWidth - MARGIN;
+        font.drawStringWithShadow(text, x, y, r, g, b, 1.0f, FONT_SCALE);
+    }
+    
     public boolean isVisible() {
         return visible;
     }
@@ -483,9 +440,6 @@ public class DebugScreen {
         return showHitboxes;
     }
     
-    /**
-     * Cleanup
-     */
     public void cleanup() {
         if (font != null) {
             font.cleanup();

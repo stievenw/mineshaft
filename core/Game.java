@@ -30,16 +30,15 @@ import static org.lwjgl.opengl.GL11.*;
 import static org.lwjgl.system.MemoryUtil.*;
 
 /**
- * ⚡ OPTIMIZED Game - Async Lighting & Mesh Building
- * ✅ REFACTORED - Player separated from Camera
+ * ✅ FIXED - Smooth mouse & flying movement (every frame)
  */
 public class Game {
     private long window;
     
     private boolean running = false;
     private World world;
-    private Player player;  // ✅ Player handles all player logic
-    private Camera camera;  // ✅ Camera only handles view
+    private Player player;
+    private Camera camera;
     private TimeOfDay timeOfDay;
     private Inventory inventory;
     private HUD hud;
@@ -83,6 +82,7 @@ public class Game {
             initGL();
             initGame();
             
+            System.out.println("Game initialized successfully");
             System.out.println("===============================================");
             running = true;
             gameLoop();
@@ -146,7 +146,7 @@ public class Game {
         glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 
         System.out.println("Display: " + Settings.WINDOW_WIDTH + "x" + Settings.WINDOW_HEIGHT);
-        System.out.println("VSync: " + (vsyncEnabled ? "ON (60 FPS cap)" : "OFF (Unlimited)"));
+        System.out.println("VSync: " + (vsyncEnabled ? "ON" : "OFF"));
     }
 
     private void setupCallbacks() {
@@ -218,72 +218,29 @@ public class Game {
         timeOfDay = new TimeOfDay();
         world = new World(timeOfDay);
         
-        // ✅ Create player first
         player = new Player(world, window);
         player.setPosition(0, 80, 0);
         player.setGameMode(GameMode.CREATIVE);
         
-        // ✅ Camera follows player
         camera = new Camera(player, window);
         
-        inventory = player.getInventory();  // ✅ Get from player
+        inventory = player.getInventory();
         hud = new HUD(window);
         debugScreen = new DebugScreen(window);
         input = new InputHandler(window);
         
         chatOverlay = new ChatOverlay(window);
-        commandHandler = new CommandHandler(world, player, timeOfDay, chatOverlay);  // ✅ Pass player
+        commandHandler = new CommandHandler(world, player, timeOfDay, chatOverlay);
         
         skyRenderer = new SkyRenderer(timeOfDay);
-
-        printControls();
-    }
-    
-    private void printControls() {
-        System.out.println("");
-        System.out.println("=== CONTROLS ===");
-        System.out.println("Movement:");
-        System.out.println("  WASD           - Move");
-        System.out.println("  Mouse          - Look around");
-        System.out.println("  SPACE          - Jump / Swim up / Fly up");
-        System.out.println("  SHIFT          - Sneak / Fly down");
-        System.out.println("  CTRL           - Sprint");
-        System.out.println("");
-        System.out.println("Interaction:");
-        System.out.println("  Left Click     - Break block");
-        System.out.println("  Right Click    - Place block");
-        System.out.println("  Middle Click   - Pick block");
-        System.out.println("  Mouse Wheel    - Cycle hotbar");
-        System.out.println("  1-9            - Select hotbar slot");
-        System.out.println("");
-        System.out.println("Chat & Commands:");
-        System.out.println("  T              - Open chat");
-        System.out.println("  /              - Open chat with command");
-        System.out.println("  Enter          - Send message/command");
-        System.out.println("  ESC            - Close chat");
-        System.out.println("");
-        System.out.println("Display:");
-        System.out.println("  F1             - Hide GUI");
-        System.out.println("  F2             - Take screenshot");
-        System.out.println("  F3             - Debug info");
-        System.out.println("  F5             - Toggle camera view");
-        System.out.println("");
-        System.out.println("Commands:");
-        System.out.println("  /time set <day|night|noon|midnight>");
-        System.out.println("  /time add <ticks>");
-        System.out.println("  /time speed set <multiplier>");
-        System.out.println("  /gamemode <survival|creative|spectator>");
-        System.out.println("  /help          - Show all commands");
-        System.out.println("");
-        System.out.println("Other:");
-        System.out.println("  V              - Toggle VSync");
-        System.out.println("  F11            - Toggle fullscreen");
-        System.out.println("  ESC            - Exit (when chat closed)");
-        System.out.println("===============================================");
     }
 
+    /**
+     * ✅ FIXED - Smooth flying movement (every frame)
+     */
     private void gameLoop() {
         long lastTime = System.nanoTime();
+        long lastFrameTime = System.nanoTime();
         long timer = System.currentTimeMillis();
 
         double nsPerTick = 1000000000.0 / Settings.TARGET_TPS;
@@ -295,20 +252,35 @@ public class Game {
         while (running && !glfwWindowShouldClose(window)) {
             long now = System.nanoTime();
             delta += (now - lastTime) / nsPerTick;
+            
+            // ✅ Calculate frame delta for smooth movement
+            float frameDelta = (now - lastFrameTime) / 1000000000.0f;
+            lastFrameTime = now;
             lastTime = now;
 
+            // ✅ Fixed 20 TPS updates (physics only)
             while (delta >= 1) {
-                update();
+                updatePhysics();
                 ticks++;
                 delta--;
             }
 
+            // ✅ Process movement input EVERY FRAME (smooth flying)
+            if (!chatOverlay.isChatOpen()) {
+                player.processMovementInput(frameDelta);
+            }
+
+            // ✅ Render every frame
             render();
             frames++;
 
             glfwSwapBuffers(window);
             glfwPollEvents();
+            
+            input.update();
+            handleInput();
 
+            // FPS/TPS counter
             if (System.currentTimeMillis() - timer > 1000) {
                 timer += 1000;
                 fps = frames;
@@ -318,30 +290,23 @@ public class Game {
 
                 if (Settings.SHOW_FPS && !debugScreen.isVisible()) {
                     glfwSetWindowTitle(window, String.format(
-                        "%s | FPS: %d | Time: %s | Light: %d",
+                        "%s | FPS: %d | TPS: %d",
                         Settings.FULL_TITLE,
                         fps,
-                        timeOfDay.getTimePhase(),
-                        timeOfDay.getSkylightLevel()
+                        tps
                     ));
                 }
 
                 frames = 0;
                 ticks = 0;
             }
-
-            input.update();
-            handleInput();
         }
     }
 
-    private void update() {
-        // ✅ Camera processes input (which calls player.processInput)
-        if (!chatOverlay.isChatOpen()) {
-            camera.processInput(1.0f / Settings.TARGET_TPS);
-        }
-        
-        // ✅ Update player tick
+    /**
+     * ✅ Physics and world updates (20 TPS)
+     */
+    private void updatePhysics() {
         player.tick();
         
         int oldSkylight = timeOfDay.getSkylightLevel();
@@ -407,7 +372,7 @@ public class Game {
             hud.render(inventory.getSelectedSlot());
         }
 
-        debugScreen.render(camera, world, player.getGameMode(), fps, tps);
+        debugScreen.render(camera, world, player.getGameMode(), fps, tps, vsyncEnabled);
         chatOverlay.render();
     }
     
@@ -469,20 +434,29 @@ public class Game {
             running = false;
         }
         
-        boolean f3Down = input.isKeyDown(GLFW_KEY_F3);
-        
-        if (f3Down) {
-            handleF3Combinations();
-        } else {
-            if (input.isKeyPressed(GLFW_KEY_F3)) {
+        if (input.isKeyPressed(GLFW_KEY_F3)) {
+            boolean hasCombination = 
+                input.isKeyDown(GLFW_KEY_Q) ||
+                input.isKeyDown(GLFW_KEY_A) ||
+                input.isKeyDown(GLFW_KEY_B) ||
+                input.isKeyDown(GLFW_KEY_C) ||
+                input.isKeyDown(GLFW_KEY_G) ||
+                input.isKeyDown(GLFW_KEY_N) ||
+                input.isKeyDown(GLFW_KEY_P) ||
+                input.isKeyDown(GLFW_KEY_S);
+            
+            if (!hasCombination) {
                 debugScreen.toggle();
             }
         }
         
-        if (!f3Down) {
+        if (input.isKeyDown(GLFW_KEY_F3)) {
+            handleF3Combinations();
+        }
+        
+        if (!input.isKeyDown(GLFW_KEY_F3)) {
             if (input.isKeyPressed(GLFW_KEY_F1)) {
                 guiVisible = !guiVisible;
-                System.out.println("GUI: " + (guiVisible ? "ON" : "OFF"));
             }
             
             if (input.isKeyPressed(GLFW_KEY_F2)) {
@@ -495,8 +469,6 @@ public class Game {
             
             if (input.isKeyPressed(GLFW_KEY_F5)) {
                 cameraMode = (cameraMode + 1) % 3;
-                String[] modes = {"First Person", "Third Person (Back)", "Third Person (Front)"};
-                System.out.println("Camera: " + modes[cameraMode]);
             }
             
             if (input.isKeyPressed(GLFW_KEY_F11)) {
@@ -504,14 +476,13 @@ public class Game {
             }
         }
         
-        if (input.isKeyPressed(GLFW_KEY_V) && !f3Down) {
+        if (input.isKeyPressed(GLFW_KEY_V) && !input.isKeyDown(GLFW_KEY_F3)) {
             vsyncEnabled = !vsyncEnabled;
             glfwSwapInterval(vsyncEnabled ? 1 : 0);
-            System.out.println("VSync: " + (vsyncEnabled ? "ON" : "OFF"));
         }
         
-        if (input.isKeyPressed(GLFW_KEY_F) && !f3Down) {
-            player.toggleFlying();  // ✅ Call player method
+        if (input.isKeyPressed(GLFW_KEY_F) && !input.isKeyDown(GLFW_KEY_F3)) {
+            player.toggleFlying();
         }
         
         for (int i = 0; i < 9; i++) {
@@ -568,12 +539,7 @@ public class Game {
     }
     
     private void handleF3Combinations() {
-        if (input.isKeyPressed(GLFW_KEY_Q)) {
-            printF3Help();
-        }
-        
         if (input.isKeyPressed(GLFW_KEY_A)) {
-            System.out.println("Reloading all chunks...");
             for (com.mineshaft.world.Chunk chunk : world.getChunks()) {
                 chunk.setNeedsRebuild(true);
             }
@@ -581,12 +547,6 @@ public class Game {
         
         if (input.isKeyPressed(GLFW_KEY_B)) {
             debugScreen.toggleHitboxes();
-        }
-        
-        if (input.isKeyPressed(GLFW_KEY_C)) {
-            String coords = String.format("%.2f %.2f %.2f", 
-                player.getX(), player.getY(), player.getZ());
-            System.out.println("Coordinates: " + coords);
         }
         
         if (input.isKeyPressed(GLFW_KEY_G)) {
@@ -599,12 +559,10 @@ public class Game {
         
         if (input.isKeyPressed(GLFW_KEY_P)) {
             pauseOnLostFocus = !pauseOnLostFocus;
-            System.out.println("Pause on lost focus: " + (pauseOnLostFocus ? "ON" : "OFF"));
         }
         
         if (input.isKeyPressed(GLFW_KEY_S)) {
             renderSky = !renderSky;
-            System.out.println("Sky rendering: " + (renderSky ? "ON" : "OFF"));
         }
     }
     
@@ -613,8 +571,7 @@ public class Game {
         GameMode next = direction > 0 ? current.next() : current.previous();
         
         previousGameMode = current;
-        player.setGameMode(next);  // ✅ Call player method
-        System.out.println("Game mode: " + next.getName());
+        player.setGameMode(next);
     }
     
     private void toggleSpectatorMode() {
@@ -622,25 +579,10 @@ public class Game {
         
         if (current == GameMode.SPECTATOR) {
             player.setGameMode(previousGameMode);
-            System.out.println("Game mode: " + previousGameMode.getName());
         } else {
             previousGameMode = current;
             player.setGameMode(GameMode.SPECTATOR);
-            System.out.println("Game mode: Spectator");
         }
-    }
-    
-    private void printF3Help() {
-        System.out.println("=== F3 DEBUG COMMANDS ===");
-        System.out.println("F3 + A = Reload all chunks");
-        System.out.println("F3 + B = Toggle hitboxes");
-        System.out.println("F3 + C = Copy coordinates");
-        System.out.println("F3 + G = Toggle chunk borders");
-        System.out.println("F3 + N = Toggle Creative/Spectator");
-        System.out.println("F3 + P = Toggle pause on lost focus");
-        System.out.println("F3 + S = Toggle sky rendering");
-        System.out.println("F3 + Q = Show this help");
-        System.out.println("=========================");
     }
     
     private void toggleFullscreen() {
@@ -659,7 +601,6 @@ public class Game {
                     vidmode.height(),
                     vidmode.refreshRate()
                 );
-                System.out.println("Fullscreen: ON");
             } else {
                 glfwSetWindowMonitor(
                     window,
@@ -669,7 +610,6 @@ public class Game {
                     Settings.WINDOW_HEIGHT,
                     GLFW_DONT_CARE
                 );
-                System.out.println("Fullscreen: OFF");
             }
         }
     }
@@ -680,7 +620,7 @@ public class Game {
         RayCast.RayResult ray = RayCast.cast(
             world,
             player.getX(),
-            player.getEyeY(),  // ✅ Use eye height
+            player.getEyeY(),
             player.getZ(),
             dir[0], dir[1], dir[2],
             REACH_DISTANCE
@@ -700,7 +640,7 @@ public class Game {
         RayCast.RayResult ray = RayCast.cast(
             world,
             player.getX(),
-            player.getEyeY(),  // ✅ Use eye height
+            player.getEyeY(),
             player.getZ(),
             dir[0], dir[1], dir[2],
             REACH_DISTANCE
@@ -717,7 +657,7 @@ public class Game {
         RayCast.RayResult ray = RayCast.cast(
             world,
             player.getX(),
-            player.getEyeY(),  // ✅ Use eye height
+            player.getEyeY(),
             player.getZ(),
             dir[0], dir[1], dir[2],
             REACH_DISTANCE
@@ -727,7 +667,6 @@ public class Game {
             Block block = world.getBlock(ray.x, ray.y, ray.z);
             if (block != null && !block.isAir()) {
                 inventory.setSlot(inventory.getSelectedSlot(), block);
-                System.out.println("Picked: " + block.getClass().getSimpleName());
             }
         }
     }

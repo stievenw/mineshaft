@@ -2,11 +2,12 @@ package com.mineshaft.world;
 
 /**
  * Game modes (like Minecraft)
+ * ✅ FIXED - Creative now has collision
  */
 public enum GameMode {
     SURVIVAL(0, "Survival", false, true, true),
-    CREATIVE(1, "Creative", true, false, false),
-    SPECTATOR(2, "Spectator", true, false, false);
+    CREATIVE(1, "Creative", true, false, true),   // ✅ hasCollision = TRUE
+    SPECTATOR(2, "Spectator", true, false, false); // Only spectator can noclip
     
     private final int id;
     private final String name;
