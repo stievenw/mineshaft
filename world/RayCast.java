@@ -47,8 +47,8 @@ public class RayCast {
         float y = py;
         float z = pz;
 
-        // Step increments
-        float stepSize = 0.1f;
+        // Step increments - FIXED: Smaller steps to catch corner intersections
+        float stepSize = 0.05f;
         float stepX = dx * stepSize;
         float stepY = dy * stepSize;
         float stepZ = dz * stepSize;

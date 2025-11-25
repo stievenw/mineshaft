@@ -226,7 +226,7 @@ public class World {
         Chunk chunk = chunks.get(pos);
 
         if (chunk == null) {
-            return null;
+            return BlockRegistry.AIR;
         }
 
         int localX = Math.floorMod(worldX, Chunk.CHUNK_SIZE);

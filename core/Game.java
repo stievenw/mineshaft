@@ -255,29 +255,30 @@ public class Game {
         while (running && !glfwWindowShouldClose(window)) {
             long now = System.nanoTime();
             delta += (now - lastTime) / nsPerTick;
-
-            // ✅ Calculate frame delta for smooth movement
-            float frameDelta = (now - lastFrameTime) / 1000000000.0f;
-            lastFrameTime = now;
             lastTime = now;
 
             // ✅ Fixed 20 TPS updates (physics only)
             while (delta >= 1) {
+                // Process input for physics
+                if (!chatOverlay.isChatOpen()) {
+                    player.updateInput();
+                }
+
                 updatePhysics();
                 ticks++;
                 delta--;
             }
 
-            // ✅ Process movement input EVERY FRAME (smooth flying)
-            if (!chatOverlay.isChatOpen()) {
-                player.processMovementInput(frameDelta);
-            }
+            // ✅ Calculate partial ticks for interpolation
+            float partialTicks = (float) delta;
 
-            // Update block interaction cooldowns
+            // Update block interaction cooldowns (visual/input)
+            float frameDelta = (now - lastFrameTime) / 1000000000.0f;
+            lastFrameTime = now;
             interactionHandler.update(frameDelta);
 
-            // ✅ Render every frame
-            render(frameDelta); // ✅ Pass frameDelta for animations
+            // ✅ Render every frame with interpolation
+            render(partialTicks);
             frames++;
 
             glfwSwapBuffers(window);
@@ -355,11 +356,11 @@ public class Game {
 
         // ✅ Apply camera transformations
         if (cameraMode == 0) {
-            camera.applyTranslations();
+            camera.applyTranslations(partialTicks);
         } else if (cameraMode == 1) {
-            applyThirdPersonCamera(4.0f);
+            applyThirdPersonCamera(4.0f, partialTicks);
         } else {
-            applyThirdPersonCamera(-4.0f);
+            applyThirdPersonCamera(-4.0f, partialTicks);
         }
 
         // Render sky
@@ -395,7 +396,7 @@ public class Game {
         chatOverlay.render();
     }
 
-    private void applyThirdPersonCamera(float distance) {
+    private void applyThirdPersonCamera(float distance, float partialTicks) {
         // 1. Move camera back by distance
         glTranslatef(0, 0, -Math.abs(distance));
 
@@ -407,7 +408,11 @@ public class Game {
         glRotatef(player.getYaw() + yawOffset, 0, 1, 0);
 
         // 3. Move camera to player position (eye level)
-        glTranslatef(-player.getX(), -player.getEyeY(), -player.getZ());
+        float renderX = player.getRenderX(partialTicks);
+        float renderY = player.getRenderY(partialTicks) + player.getCurrentEyeHeight();
+        float renderZ = player.getRenderZ(partialTicks);
+
+        glTranslatef(-renderX, -renderY, -renderZ);
     }
 
     private void renderChunkBorders() {

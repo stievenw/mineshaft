@@ -67,12 +67,17 @@ public class Camera {
         player.setRotation(newYaw, newPitch);
     }
 
-    public void applyTranslations() {
+    public void applyTranslations(float partialTicks) {
         // Standard OpenGL camera: Pitch (X-axis), then Yaw (Y-axis)
         // Order must match third-person camera for consistency
         glRotatef(player.getPitch(), 1, 0, 0);
         glRotatef(player.getYaw(), 0, 1, 0);
-        glTranslatef(-player.getX(), -player.getEyeY(), -player.getZ());
+
+        float renderX = player.getRenderX(partialTicks);
+        float renderY = player.getRenderY(partialTicks) + player.getCurrentEyeHeight();
+        float renderZ = player.getRenderZ(partialTicks);
+
+        glTranslatef(-renderX, -renderY, -renderZ);
     }
 
     public void applyUnderwaterEffect() {
@@ -141,6 +146,18 @@ public class Camera {
         float z = (float) (-Math.cos(yawRad) * Math.cos(pitchRad));
 
         return new float[] { x, y, z };
+    }
+
+    public float getX(float partialTicks) {
+        return player.getRenderX(partialTicks);
+    }
+
+    public float getY(float partialTicks) {
+        return player.getRenderY(partialTicks);
+    }
+
+    public float getZ(float partialTicks) {
+        return player.getRenderZ(partialTicks);
     }
 
     public float getX() {

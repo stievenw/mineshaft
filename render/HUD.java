@@ -10,7 +10,7 @@ import java.nio.ByteBuffer;
 import org.lwjgl.BufferUtils;
 
 /**
- * HUD rendering using Minecraft GUI textures with stabilization
+ * HUD rendering using Minecraft GUI textures
  * UV coordinates based on JSON grid configuration
  */
 public class HUD {
@@ -27,7 +27,7 @@ public class HUD {
     private static final int CROSSHAIR_GRID_Y = 0;
     private static final int CROSSHAIR_GRID_SIZE = 16;
 
-    // Hotbar slots configuration (from JSON) - UPDATED
+    // Hotbar slots configuration (from JSON)
     private static final float SLOT_GRID_SIZE = 20.166f;
     private static final int SLOT_GRID_Y = 0;
 
@@ -35,11 +35,6 @@ public class HUD {
     private static final int SELECTED_SLOT_GRID_X = 0;
     private static final int SELECTED_SLOT_GRID_Y = 1;
     private static final int SELECTED_SLOT_GRID_SIZE = 22;
-
-    // Stabilization cache
-    private float cachedCenterX = 0;
-    private float cachedCenterY = 0;
-    private float cachedHotbarY = 0;
 
     public HUD(long window) {
         this.window = window;
@@ -129,26 +124,6 @@ public class HUD {
         glfwGetFramebufferSize(window, w, h);
         this.screenWidth = w[0];
         this.screenHeight = h[0];
-
-        // Update cached stable positions
-        updateStablePositions();
-    }
-
-    /**
-     * Calculate and cache stable pixel-aligned positions
-     */
-    private void updateStablePositions() {
-        // Round to nearest pixel for stability
-        cachedCenterX = snapToPixel(screenWidth / 2.0f);
-        cachedCenterY = snapToPixel(screenHeight / 2.0f);
-        cachedHotbarY = snapToPixel(screenHeight - 68.0f); // Fixed distance from bottom
-    }
-
-    /**
-     * Snap coordinate to nearest pixel to prevent sub-pixel jittering
-     */
-    private float snapToPixel(float value) {
-        return Math.round(value);
     }
 
     public void render(int selectedSlot) {
@@ -162,7 +137,6 @@ public class HUD {
         glPushMatrix();
         glLoadIdentity();
 
-        // Use integer coordinates for stable orthographic projection
         glOrtho(0, screenWidth, screenHeight, 0, -1, 1);
 
         glMatrixMode(GL_MODELVIEW);
@@ -180,7 +154,6 @@ public class HUD {
         // Clear depth to ensure HUD is always on top
         glClear(GL_DEPTH_BUFFER_BIT);
 
-        // Disable any potential camera transforms
         glLoadIdentity();
 
         renderCrosshair();
@@ -198,53 +171,50 @@ public class HUD {
 
     private void renderCrosshair() {
         if (widgetsTexture <= 0) {
-            // Fallback: simple white crosshair with pixel snapping
+            // Fallback: simple white crosshair
             glDisable(GL_TEXTURE_2D);
 
-            float centerX = cachedCenterX;
-            float centerY = cachedCenterY;
+            float centerX = screenWidth / 2.0f;
+            float centerY = screenHeight / 2.0f;
 
             glLineWidth(2.0f);
             glColor4f(1, 1, 1, 1);
             glBegin(GL_LINES);
             // Horizontal line
-            glVertex2f(snapToPixel(centerX - 8), centerY);
-            glVertex2f(snapToPixel(centerX + 8), centerY);
+            glVertex2f(centerX - 8, centerY);
+            glVertex2f(centerX + 8, centerY);
             // Vertical line
-            glVertex2f(centerX, snapToPixel(centerY - 8));
-            glVertex2f(centerX, snapToPixel(centerY + 8));
+            glVertex2f(centerX, centerY - 8);
+            glVertex2f(centerX, centerY + 8);
             glEnd();
             glLineWidth(1.0f);
             glEnable(GL_TEXTURE_2D);
             return;
         }
 
-        float centerX = cachedCenterX;
-        float centerY = cachedCenterY;
+        float centerX = screenWidth / 2.0f;
+        float centerY = screenHeight / 2.0f;
 
         // Crosshair texture size and scale
         float textureSize = CROSSHAIR_GRID_SIZE; // 16 pixels
-        float scale = 2.0f; // Scale factor for rendering
-        float renderSize = snapToPixel(textureSize * scale);
+        float scale = 2.0f;
+        float renderSize = textureSize * scale;
 
         glBindTexture(GL_TEXTURE_2D, widgetsTexture);
         glColor4f(1, 1, 1, 1);
 
-        // Calculate UV coordinates based on grid position
-        // Crosshair is at grid_x=15, grid_y=0, grid_size=16
-        // Texture position: x = 15 * 16 = 240, y = 0 * 16 = 0
+        // Calculate UV coordinates
         float texX = CROSSHAIR_GRID_X * CROSSHAIR_GRID_SIZE; // 240
         float texY = CROSSHAIR_GRID_Y * CROSSHAIR_GRID_SIZE; // 0
 
-        float u1 = texX / (float) ATLAS_SIZE; // 240/256
-        float v1 = texY / (float) ATLAS_SIZE; // 0/256
-        float u2 = (texX + CROSSHAIR_GRID_SIZE) / (float) ATLAS_SIZE; // 256/256
-        float v2 = (texY + CROSSHAIR_GRID_SIZE) / (float) ATLAS_SIZE; // 16/256
+        float u1 = texX / (float) ATLAS_SIZE;
+        float v1 = texY / (float) ATLAS_SIZE;
+        float u2 = (texX + CROSSHAIR_GRID_SIZE) / (float) ATLAS_SIZE;
+        float v2 = (texY + CROSSHAIR_GRID_SIZE) / (float) ATLAS_SIZE;
 
-        // Calculate and snap to pixel boundaries
         float halfSize = renderSize / 2;
-        float x = snapToPixel(centerX - halfSize);
-        float y = snapToPixel(centerY - halfSize);
+        float x = centerX - halfSize;
+        float y = centerY - halfSize;
 
         glBegin(GL_QUADS);
         glTexCoord2f(u1, v1);
@@ -268,27 +238,23 @@ public class HUD {
 
         glBindTexture(GL_TEXTURE_2D, widgetsTexture);
 
-        // Hotbar slot dimensions with precise grid size
+        // Hotbar slot dimensions
         float slotTextureSize = SLOT_GRID_SIZE; // 20.166 pixels in texture
-        float scale = 3.0f; // Scale factor for rendering
-        float scaledSlotSize = snapToPixel(slotTextureSize * scale); // ~60.5 pixels -> 61 pixels
-        float totalWidth = snapToPixel(9 * scaledSlotSize); // Total width for 9 slots
+        float scale = 3.0f;
+        float scaledSlotSize = slotTextureSize * scale;
+        float totalWidth = 9 * scaledSlotSize;
 
-        // Calculate stable positions
-        float startX = snapToPixel((screenWidth - totalWidth) / 2.0f);
-        float startY = cachedHotbarY;
+        // Calculate positions
+        float startX = (screenWidth - totalWidth) / 2.0f;
+        float startY = screenHeight - 68.0f;
 
         glColor4f(1, 1, 1, 1);
 
-        // Draw each slot with pixel-perfect positioning
+        // Draw each slot
         for (int i = 0; i < 9; i++) {
-            float slotX = snapToPixel(startX + i * scaledSlotSize);
+            float slotX = startX + i * scaledSlotSize;
 
-            // Calculate UV coordinates for this slot using precise grid size
-            // Slots are at grid_y=0, grid_x=0 to 8, grid_size=20.166
-            // Slot 0: texture position (0, 0)
-            // Slot 1: texture position (20.166, 0)
-            // Slot i: texture position (i*20.166, 0)
+            // Calculate UV coordinates
             float texX = i * SLOT_GRID_SIZE;
             float texY = SLOT_GRID_Y * SLOT_GRID_SIZE;
 
@@ -309,30 +275,26 @@ public class HUD {
             glEnd();
         }
 
-        // Draw selection highlight using the selected slot texture
-        float selectionX = snapToPixel(startX + selectedSlot * scaledSlotSize);
+        // Draw selection highlight
+        float selectionX = startX + selectedSlot * scaledSlotSize;
 
         // Selected slot texture dimensions
         float selectedTextureSize = SELECTED_SLOT_GRID_SIZE; // 22x22 pixels
-        float selectedRenderSize = snapToPixel(selectedTextureSize * scale); // 66 pixels
+        float selectedRenderSize = selectedTextureSize * scale;
 
         // Calculate UV coordinates for selected slot
-        // Selected slot is at grid_x=0, grid_y=1, grid_size=22
-        // Texture position: x = 0 * 22 = 0, y = 1 * 22 = 22
         float selTexX = SELECTED_SLOT_GRID_X * SELECTED_SLOT_GRID_SIZE; // 0
         float selTexY = SELECTED_SLOT_GRID_Y * SELECTED_SLOT_GRID_SIZE; // 22
 
-        float selU1 = selTexX / (float) ATLAS_SIZE; // 0/256
-        float selV1 = selTexY / (float) ATLAS_SIZE; // 22/256
-        float selU2 = (selTexX + SELECTED_SLOT_GRID_SIZE) / (float) ATLAS_SIZE; // 22/256
-        float selV2 = (selTexY + SELECTED_SLOT_GRID_SIZE) / (float) ATLAS_SIZE; // 44/256
+        float selU1 = selTexX / (float) ATLAS_SIZE;
+        float selV1 = selTexY / (float) ATLAS_SIZE;
+        float selU2 = (selTexX + SELECTED_SLOT_GRID_SIZE) / (float) ATLAS_SIZE;
+        float selV2 = (selTexY + SELECTED_SLOT_GRID_SIZE) / (float) ATLAS_SIZE;
 
-        // Center the selection highlight (22x22 @ scale 3 = 66px) over the slot
-        // (20.166x20.166 @ scale 3 = ~61px)
-        // Offset = (66 - 61) / 2 = 2.5 pixels -> snap to 3 or 2
-        float offset = snapToPixel((selectedRenderSize - scaledSlotSize) / 2.0f);
-        float selX = snapToPixel(selectionX - offset);
-        float selY = snapToPixel(startY - offset);
+        // Center the selection highlight over the slot
+        float offset = (selectedRenderSize - scaledSlotSize) / 2.0f;
+        float selX = selectionX - offset;
+        float selY = startY - offset;
 
         glBegin(GL_QUADS);
         glTexCoord2f(selU1, selV1);
@@ -353,10 +315,10 @@ public class HUD {
 
         float slotSize = 40.0f;
         float padding = 4.0f;
-        float totalWidth = snapToPixel(9 * (slotSize + padding) + padding);
+        float totalWidth = 9 * (slotSize + padding) + padding;
 
-        float startX = snapToPixel((screenWidth - totalWidth) / 2.0f);
-        float startY = snapToPixel(screenHeight - slotSize - padding * 2 - 20);
+        float startX = (screenWidth - totalWidth) / 2.0f;
+        float startY = screenHeight - slotSize - padding * 2 - 20;
 
         // Background
         glColor4f(0, 0, 0, 0.6f);
@@ -369,8 +331,8 @@ public class HUD {
 
         // Slots
         for (int i = 0; i < 9; i++) {
-            float slotX = snapToPixel(startX + padding + i * (slotSize + padding));
-            float slotY = snapToPixel(startY + padding);
+            float slotX = startX + padding + i * (slotSize + padding);
+            float slotY = startY + padding;
 
             // Selection highlight
             if (i == selectedSlot) {
@@ -401,7 +363,6 @@ public class HUD {
     public void updateSize(int width, int height) {
         this.screenWidth = width;
         this.screenHeight = height;
-        updateStablePositions();
     }
 
     public void cleanup() {

@@ -7,70 +7,79 @@ import static org.lwjgl.glfw.GLFW.*;
 import static org.lwjgl.opengl.GL11.*;
 
 /**
- * ✅ Chat overlay with SIMPLE font rendering
+ * ✅ Chat overlay - Message box lowered
  */
 public class ChatOverlay {
-    
+
     private final long window;
     private boolean chatOpen = false;
     private StringBuilder currentInput = new StringBuilder();
     private List<String> chatHistory = new ArrayList<>();
     private List<String> messageLog = new ArrayList<>();
-    
+
     private static final int MAX_MESSAGES = 10;
     private static final int MAX_HISTORY = 100;
     private long lastMessageTime = 0;
     private static final long MESSAGE_FADE_TIME = 5000;
-    
+
     private int screenWidth = 1280;
     private int screenHeight = 720;
-    
+
     private String pendingMessage = null;
     private boolean ignoreNextChar = false;
     private int historyIndex = -1;
-    
-    // ✅ Use SIMPLE font (no texture needed)
+
+    // ✅ ADJUSTED POSITIONS
+    private static final float TEXT_SCALE = 3.0f;
+    private static final float LINE_HEIGHT = 30.0f;
+    private static final float INPUT_HEIGHT = 36.0f;
+    private static final float CHAT_Y_OFFSET = 150.0f; // ✅ Messages lowered (200 → 150)
+    private static final float INPUT_Y_OFFSET = 80.0f; // Input box position
+    private static final float CHAT_WIDTH = 700.0f;
+    private static final float CHAT_PADDING = 6.0f;
+
     private SimpleFont font;
-    
+
     public ChatOverlay(long window) {
         this.window = window;
-        
+
         int[] w = new int[1];
         int[] h = new int[1];
         glfwGetFramebufferSize(window, w, h);
         this.screenWidth = w[0];
         this.screenHeight = h[0];
-        
-        // ✅ Initialize simple font
+
         font = new SimpleFont();
-        
+
         setupCallbacks();
-        
-        // ✅ Test message
-        addMessage("Chat system initialized!");
-        
-        System.out.println("✅ [Chat] Initialized with SimpleFont renderer");
+
+        addMessage("§eChat system initialized!");
+        addMessage("§7Press T to chat, / for commands");
+
+        System.out.println("✅ [Chat] Initialized with bigger font");
     }
-    
+
     private void setupCallbacks() {
         glfwSetKeyCallback(window, (w, key, scancode, action, mods) -> {
-            if (action == GLFW_RELEASE) return;
-            
+            if (action == GLFW_RELEASE)
+                return;
+
             if (chatOpen) {
                 handleChatKeyPress(key, action);
             } else {
                 handleGameKeyPress(key);
             }
         });
-        
+
         glfwSetCharCallback(window, (w, codepoint) -> {
-            if (!chatOpen) return;
-            
+            if (!chatOpen)
+                return;
+
             if (ignoreNextChar) {
                 ignoreNextChar = false;
                 return;
             }
-            
+
             if (codepoint >= 32 && codepoint < 127) {
                 if (currentInput.length() < 100) {
                     currentInput.append((char) codepoint);
@@ -79,7 +88,7 @@ public class ChatOverlay {
             }
         });
     }
-    
+
     private void handleChatKeyPress(int key, int action) {
         if (key == GLFW_KEY_ENTER || key == GLFW_KEY_KP_ENTER) {
             if (action == GLFW_PRESS) {
@@ -88,14 +97,14 @@ public class ChatOverlay {
             }
             return;
         }
-        
+
         if (key == GLFW_KEY_ESCAPE) {
             if (action == GLFW_PRESS) {
                 closeChat();
             }
             return;
         }
-        
+
         if (key == GLFW_KEY_BACKSPACE) {
             if (currentInput.length() > 0) {
                 currentInput.deleteCharAt(currentInput.length() - 1);
@@ -103,64 +112,65 @@ public class ChatOverlay {
             }
             return;
         }
-        
+
         if (key == GLFW_KEY_V && action == GLFW_PRESS) {
-            if (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS || 
-                glfwGetKey(window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS) {
+            if (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS ||
+                    glfwGetKey(window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS) {
                 pasteFromClipboard();
             }
             return;
         }
-        
+
         if (key == GLFW_KEY_UP && action == GLFW_PRESS) {
             navigateHistory(1);
             return;
         }
-        
+
         if (key == GLFW_KEY_DOWN && action == GLFW_PRESS) {
             navigateHistory(-1);
             return;
         }
     }
-    
+
     private void handleGameKeyPress(int key) {
         if (key == GLFW_KEY_T) {
             openChat();
             ignoreNextChar = true;
             return;
         }
-        
+
         if (key == GLFW_KEY_SLASH) {
             openChatWithCommand();
             ignoreNextChar = true;
             return;
         }
     }
-    
+
     private void navigateHistory(int direction) {
-        if (chatHistory.isEmpty()) return;
-        
+        if (chatHistory.isEmpty())
+            return;
+
         historyIndex += direction;
-        
+
         if (historyIndex < -1) {
             historyIndex = -1;
         } else if (historyIndex >= chatHistory.size()) {
             historyIndex = chatHistory.size() - 1;
         }
-        
+
         currentInput.setLength(0);
         if (historyIndex >= 0) {
             currentInput.append(chatHistory.get(chatHistory.size() - 1 - historyIndex));
         }
     }
-    
+
     private void openChat() {
         chatOpen = true;
         currentInput.setLength(0);
         historyIndex = -1;
         System.out.println("[Chat] Opened");
     }
-    
+
     private void openChatWithCommand() {
         chatOpen = true;
         currentInput.setLength(0);
@@ -168,25 +178,25 @@ public class ChatOverlay {
         historyIndex = -1;
         System.out.println("[Chat] Opened with command");
     }
-    
+
     private void sendMessage() {
         String message = currentInput.toString().trim();
-        
+
         if (!message.isEmpty()) {
-            addMessage("> " + message);
-            
             chatHistory.add(message);
             if (chatHistory.size() > MAX_HISTORY) {
                 chatHistory.remove(0);
             }
-            
+
             pendingMessage = message;
+
+            System.out.println("[Chat] Sent: " + message);
         }
-        
+
         currentInput.setLength(0);
         historyIndex = -1;
     }
-    
+
     private void closeChat() {
         chatOpen = false;
         currentInput.setLength(0);
@@ -194,7 +204,7 @@ public class ChatOverlay {
         historyIndex = -1;
         System.out.println("[Chat] Closed");
     }
-    
+
     private void pasteFromClipboard() {
         String clipboard = glfwGetClipboardString(window);
         if (clipboard != null && !clipboard.isEmpty()) {
@@ -206,13 +216,13 @@ public class ChatOverlay {
             historyIndex = -1;
         }
     }
-    
+
     public String getPendingMessage() {
         String msg = pendingMessage;
         pendingMessage = null;
         return msg;
     }
-    
+
     public void addMessage(String message) {
         messageLog.add(message);
         if (messageLog.size() > MAX_MESSAGES) {
@@ -221,9 +231,9 @@ public class ChatOverlay {
         lastMessageTime = System.currentTimeMillis();
         System.out.println("[Chat] " + message);
     }
-    
+
     /**
-     * ✅ FIXED: Render with simple font (GUARANTEED VISIBLE)
+     * ✅ Message box LOWERED position
      */
     public void render() {
         int[] w = new int[1];
@@ -231,78 +241,154 @@ public class ChatOverlay {
         glfwGetFramebufferSize(window, w, h);
         screenWidth = w[0];
         screenHeight = h[0];
-        
-        // ✅ Save current OpenGL state
+
         glPushAttrib(GL_ALL_ATTRIB_BITS);
-        
-        // ✅ Setup 2D rendering
+
         glMatrixMode(GL_PROJECTION);
         glPushMatrix();
         glLoadIdentity();
         glOrtho(0, screenWidth, screenHeight, 0, -1, 1);
-        
+
         glMatrixMode(GL_MODELVIEW);
         glPushMatrix();
         glLoadIdentity();
-        
-        // ✅ Disable stuff that might interfere
+
         glDisable(GL_DEPTH_TEST);
         glDisable(GL_LIGHTING);
         glDisable(GL_TEXTURE_2D);
         glDisable(GL_CULL_FACE);
-        
+
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        
-        float chatY = screenHeight - 60;
-        
+
+        // ✅ Messages position - LOWERED
+        float chatY = screenHeight - CHAT_Y_OFFSET;
+
         // ✅ Render message log
         if (chatOpen || (System.currentTimeMillis() - lastMessageTime < MESSAGE_FADE_TIME)) {
-            float alpha = chatOpen ? 1.0f : Math.max(0, 1.0f - (System.currentTimeMillis() - lastMessageTime) / (float) MESSAGE_FADE_TIME);
-            
+            float alpha = chatOpen ? 1.0f
+                    : Math.max(0, 1.0f - (System.currentTimeMillis() - lastMessageTime) / (float) MESSAGE_FADE_TIME);
+
             for (int i = 0; i < messageLog.size(); i++) {
                 String message = messageLog.get(messageLog.size() - 1 - i);
-                float msgY = chatY - (i * 14);
-                
+                float msgY = chatY - (i * LINE_HEIGHT);
+
                 // Background
                 glColor4f(0, 0, 0, 0.6f * alpha);
-                drawRect(5, msgY - 2, 500, 14);
-                
-                // Text
-                font.drawString(message, 10, msgY, 1.0f, 1.0f, 1.0f, alpha);
+                drawRect(5, msgY - CHAT_PADDING, CHAT_WIDTH, LINE_HEIGHT);
+
+                // Text with color support
+                renderColoredText(message, 10, msgY, TEXT_SCALE, alpha);
             }
         }
-        
+
         // ✅ Render input box
         if (chatOpen) {
-            float inputY = screenHeight - 35;
-            
+            float inputY = screenHeight - INPUT_Y_OFFSET;
+
             // Background
             glColor4f(0, 0, 0, 0.9f);
-            drawRect(5, inputY - 2, screenWidth - 10, 18);
-            
+            drawRect(5, inputY - CHAT_PADDING, screenWidth - 10, INPUT_HEIGHT);
+
             // Border
             glColor4f(1, 1, 1, 1);
-            drawRectOutline(5, inputY - 2, screenWidth - 10, 18);
-            
+            drawRectOutline(5, inputY - CHAT_PADDING, screenWidth - 10, INPUT_HEIGHT);
+
             // Input text with cursor
             String displayText = currentInput.toString();
             boolean showCursor = (System.currentTimeMillis() / 500) % 2 == 0;
             String textWithCursor = displayText + (showCursor ? "_" : " ");
-            
-            // Draw text
-            font.drawString(textWithCursor, 10, inputY, 1.0f, 1.0f, 0.0f, 1.0f); // Yellow text
+
+            // Draw text (Yellow)
+            font.drawString(textWithCursor, 10, inputY, 1.0f, 1.0f, 0.0f, 1.0f, TEXT_SCALE);
         }
-        
-        // ✅ Restore OpenGL state
+
         glMatrixMode(GL_PROJECTION);
         glPopMatrix();
         glMatrixMode(GL_MODELVIEW);
         glPopMatrix();
-        
+
         glPopAttrib();
     }
-    
+
+    /**
+     * ✅ Render text with Minecraft-style color codes (§)
+     */
+    private void renderColoredText(String text, float x, float y, float scale, float alpha) {
+        float currentX = x;
+        float r = 1.0f, g = 1.0f, b = 1.0f;
+
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+
+            // Check for color code
+            if (c == '§' && i + 1 < text.length()) {
+                char code = text.charAt(i + 1);
+                float[] color = getColorFromCode(code);
+                if (color != null) {
+                    r = color[0];
+                    g = color[1];
+                    b = color[2];
+                    i++; // Skip the color code character
+                    continue;
+                }
+            }
+
+            // Draw character
+            String charStr = String.valueOf(c);
+            font.drawString(charStr, currentX, y, r, g, b, alpha, scale);
+
+            // Move X position
+            if (c == ' ') {
+                currentX += (8 / 2) * scale;
+            } else {
+                currentX += 8 * scale;
+            }
+        }
+    }
+
+    /**
+     * ✅ Minecraft color codes
+     */
+    private float[] getColorFromCode(char code) {
+        switch (code) {
+            case '0':
+                return new float[] { 0.0f, 0.0f, 0.0f }; // Black
+            case '1':
+                return new float[] { 0.0f, 0.0f, 0.67f }; // Dark Blue
+            case '2':
+                return new float[] { 0.0f, 0.67f, 0.0f }; // Dark Green
+            case '3':
+                return new float[] { 0.0f, 0.67f, 0.67f }; // Dark Aqua
+            case '4':
+                return new float[] { 0.67f, 0.0f, 0.0f }; // Dark Red
+            case '5':
+                return new float[] { 0.67f, 0.0f, 0.67f }; // Dark Purple
+            case '6':
+                return new float[] { 1.0f, 0.67f, 0.0f }; // Gold
+            case '7':
+                return new float[] { 0.67f, 0.67f, 0.67f }; // Gray
+            case '8':
+                return new float[] { 0.33f, 0.33f, 0.33f }; // Dark Gray
+            case '9':
+                return new float[] { 0.33f, 0.33f, 1.0f }; // Blue
+            case 'a':
+                return new float[] { 0.33f, 1.0f, 0.33f }; // Green
+            case 'b':
+                return new float[] { 0.33f, 1.0f, 1.0f }; // Aqua
+            case 'c':
+                return new float[] { 1.0f, 0.33f, 0.33f }; // Red
+            case 'd':
+                return new float[] { 1.0f, 0.33f, 1.0f }; // Light Purple
+            case 'e':
+                return new float[] { 1.0f, 1.0f, 0.33f }; // Yellow
+            case 'f':
+                return new float[] { 1.0f, 1.0f, 1.0f }; // White
+            default:
+                return null;
+        }
+    }
+
     private void drawRect(float x, float y, float width, float height) {
         glBegin(GL_QUADS);
         glVertex2f(x, y);
@@ -311,7 +397,7 @@ public class ChatOverlay {
         glVertex2f(x, y + height);
         glEnd();
     }
-    
+
     private void drawRectOutline(float x, float y, float width, float height) {
         glLineWidth(2.0f);
         glBegin(GL_LINE_LOOP);
@@ -321,32 +407,32 @@ public class ChatOverlay {
         glVertex2f(x, y + height);
         glEnd();
     }
-    
+
     public boolean isChatOpen() {
         return chatOpen;
     }
-    
+
     public void updateSize(int width, int height) {
         this.screenWidth = width;
         this.screenHeight = height;
     }
-    
+
     public String getCurrentInput() {
         return currentInput.toString();
     }
-    
+
     public List<String> getMessageLog() {
         return new ArrayList<>(messageLog);
     }
-    
+
     public List<String> getChatHistory() {
         return new ArrayList<>(chatHistory);
     }
-    
+
     public void cleanup() {
         glfwSetCharCallback(window, null);
         glfwSetKeyCallback(window, null);
-        
+
         if (font != null) {
             font.cleanup();
         }
