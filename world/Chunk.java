@@ -17,9 +17,10 @@ public class Chunk {
     public static final int CHUNK_SIZE = 16;
     public static final int CHUNK_HEIGHT = Settings.WORLD_HEIGHT; // 384 blocks
 
-    private GameBlock[][][] blocks;
-    private byte[][][] skyLight;
-    private byte[][][] blockLight;
+    // ✅ MINECRAFT-STYLE: Chunk divided into 16×16×16 sections
+    public static final int SECTION_COUNT = CHUNK_HEIGHT / ChunkSection.SECTION_SIZE; // 24 sections
+
+    private ChunkSection[] sections; // 24 sections (Y=-64 to Y=320)
 
     private int chunkX, chunkZ;
     private boolean needsRebuild = true;
@@ -31,11 +32,10 @@ public class Chunk {
     public Chunk(int chunkX, int chunkZ) {
         this.chunkX = chunkX;
         this.chunkZ = chunkZ;
-        this.blocks = new GameBlock[CHUNK_SIZE][CHUNK_HEIGHT][CHUNK_SIZE];
-        this.skyLight = new byte[CHUNK_SIZE][CHUNK_HEIGHT][CHUNK_SIZE];
-        this.blockLight = new byte[CHUNK_SIZE][CHUNK_HEIGHT][CHUNK_SIZE];
+        this.sections = new ChunkSection[SECTION_COUNT];
 
-        initializeBlocks();
+        // Sections are created lazily during terrain generation
+        // Empty sections (all air) are never allocated, saving memory
 
         // ✅ DON'T generate terrain in constructor!
         // Will be called from background thread via generate()
@@ -92,24 +92,52 @@ public class Chunk {
         this.state = state;
     }
 
-    // ========== INITIALIZATION ==========
+    // ========== \u2705 SECTION MANAGEMENT ==========
 
-    private void initializeBlocks() {
-        for (int x = 0; x < CHUNK_SIZE; x++) {
-            for (int y = 0; y < CHUNK_HEIGHT; y++) {
-                for (int z = 0; z < CHUNK_SIZE; z++) {
-                    blocks[x][y][z] = BlockRegistry.AIR;
-                    skyLight[x][y][z] = 0;
-                    blockLight[x][y][z] = 0;
-                }
-            }
+    /**
+     * Get section index from world Y coordinate
+     */
+    private int getSectionIndex(int worldY) {
+        return (worldY - Settings.WORLD_MIN_Y) / ChunkSection.SECTION_SIZE;
+    }
+
+    /**
+     * Get section at index, or null if not allocated
+     */
+    public ChunkSection getSection(int sectionIndex) {
+        if (sectionIndex < 0 || sectionIndex >= SECTION_COUNT) {
+            return null;
         }
+        return sections[sectionIndex];
+    }
+
+    /**
+     * Get or create section at index (lazy allocation)
+     */
+    private ChunkSection getOrCreateSection(int sectionIndex) {
+        if (sectionIndex < 0 || sectionIndex >= SECTION_COUNT) {
+            return null;
+        }
+
+        if (sections[sectionIndex] == null) {
+            sections[sectionIndex] = new ChunkSection(sectionIndex);
+        }
+
+        return sections[sectionIndex];
+    }
+
+    /**
+     * Convert world Y to local section Y coordinate (0-15)
+     */
+    private int toLocalY(int worldY) {
+        return (worldY - Settings.WORLD_MIN_Y) % ChunkSection.SECTION_SIZE;
     }
 
     // ========== ✅ TERRAIN GENERATION (FIXED Y RANGE) ==========
 
     /**
      * ✅ SIMPLIFIED: Smooth, Minecraft-like terrain generation
+     * ✅ OPTIMIZED: Uses section-based storage (lazy allocation)
      */
     private void generateTerrain() {
         Random random = new Random(Settings.WORLD_SEED + chunkX * 341873128712L + chunkZ * 132897987541L);
@@ -126,16 +154,13 @@ public class Chunk {
         }
 
         // ✅ Generate blocks for ENTIRE height range (Y=-64 to Y=319)
+        // Sections created only when needed (lazy allocation)
         for (int x = 0; x < CHUNK_SIZE; x++) {
             for (int z = 0; z < CHUNK_SIZE; z++) {
-                int worldX = chunkX * CHUNK_SIZE + x;
-                int worldZ = chunkZ * CHUNK_SIZE + z;
                 int height = heights[x][z];
 
                 // ✅ Loop through ALL Y levels from -64 to 319
-                for (int index = 0; index < CHUNK_HEIGHT; index++) {
-                    int worldY = Settings.indexToWorldY(index);
-
+                for (int worldY = Settings.WORLD_MIN_Y; worldY <= Settings.WORLD_MAX_Y; worldY++) {
                     GameBlock block;
 
                     // ✅ Bedrock bottom layer (Y=-64)
@@ -148,7 +173,7 @@ public class Chunk {
                         double bedrockChance = 1.0 - (distanceFromBottom / (double) Settings.BEDROCK_LAYERS);
                         block = random.nextDouble() < bedrockChance ? BlockRegistry.BEDROCK : BlockRegistry.STONE;
                     }
-                    // ✅ Above terrain = air
+                    // ✅ Above terrain = air (don't allocate section for empty sky)
                     else if (worldY > height) {
                         block = BlockRegistry.AIR;
                     }
@@ -171,15 +196,27 @@ public class Chunk {
                         block = generateOre(worldY, random);
                     }
 
-                    blocks[x][index][z] = block;
+                    // Set block in appropriate section (only if not air)
+                    if (!block.isAir()) {
+                        int sectionIndex = getSectionIndex(worldY);
+                        ChunkSection section = getOrCreateSection(sectionIndex);
+
+                        if (section != null) {
+                            int localY = toLocalY(worldY);
+                            section.setBlock(x, localY, z, block);
+                        }
+                    }
                 }
 
                 // ✅ Fill water from terrain surface to sea level
                 if (height < Settings.SEA_LEVEL) {
                     for (int worldY = height + 1; worldY <= Settings.SEA_LEVEL; worldY++) {
-                        int index = toIndex(worldY);
-                        if (isValidIndex(index)) {
-                            blocks[x][index][z] = BlockRegistry.WATER;
+                        int sectionIndex = getSectionIndex(worldY);
+                        ChunkSection section = getOrCreateSection(sectionIndex);
+
+                        if (section != null) {
+                            int localY = toLocalY(worldY);
+                            section.setBlock(x, localY, z, BlockRegistry.WATER);
                         }
                     }
                 }
@@ -188,7 +225,7 @@ public class Chunk {
                 if (height >= Settings.SEA_LEVEL + 1 && height < 85) {
                     // 2% chance on plains
                     if (random.nextDouble() < 0.02) {
-                        generateTree(x, toIndex(height + 1), z, random);
+                        generateTree(x, height + 1, z, random);
                     }
                 }
             }
@@ -340,15 +377,15 @@ public class Chunk {
 
                     // ✅ Create cave if noise threshold exceeded
                     if (combinedNoise > 0.7) {
-                        GameBlock current = blocks[x][index][z];
+                        GameBlock current = getBlock(x, worldY, z);
 
                         // Don't replace bedrock or existing water
                         if (current != BlockRegistry.BEDROCK && current != BlockRegistry.WATER) {
                             // Below Y=20: sometimes fill with water (flooded caves)
                             if (worldY < Settings.SEA_LEVEL - 43 && random.nextDouble() < 0.3) {
-                                blocks[x][index][z] = BlockRegistry.WATER;
+                                setBlock(x, worldY, z, BlockRegistry.WATER);
                             } else {
-                                blocks[x][index][z] = BlockRegistry.AIR;
+                                setBlock(x, worldY, z, BlockRegistry.AIR);
                             }
                         }
                     }
@@ -360,20 +397,20 @@ public class Chunk {
     /**
      * ✅ SIMPLIFIED: Generate simple oak tree
      */
-    private void generateTree(int x, int startIndex, int z, Random random) {
+    private void generateTree(int x, int worldY, int z, Random random) {
         int height = 5 + random.nextInt(2);
 
-        if (!canPlaceTree(x, startIndex, z, height + 4)) {
+        if (!canPlaceTree(x, worldY, z, height + 4)) {
             return;
         }
 
         // Trunk
         for (int i = 0; i < height; i++) {
-            setBlockSafe(x, startIndex + i, z, BlockRegistry.OAK_LOG);
+            setBlock(x, worldY + i, z, BlockRegistry.OAK_LOG);
         }
 
         // Leaves
-        int leafY = startIndex + height;
+        int leafY = worldY + height;
         for (int dx = -2; dx <= 2; dx++) {
             for (int dy = -2; dy <= 2; dy++) {
                 for (int dz = -2; dz <= 2; dz++) {
@@ -385,33 +422,28 @@ public class Chunk {
         }
     }
 
-    private boolean canPlaceTree(int x, int startIndex, int z, int height) {
-        if (startIndex + height >= CHUNK_HEIGHT)
+    private boolean canPlaceTree(int x, int worldY, int z, int totalHeight) {
+        // Edge protection
+        if (x < 2 || x > CHUNK_SIZE - 3 || z < 2 || z > CHUNK_SIZE - 3) {
             return false;
-
-        for (int i = 0; i < height; i++) {
-            int checkIndex = startIndex + i;
-            if (checkIndex >= CHUNK_HEIGHT)
-                return false;
-
-            GameBlock block = blocks[x][checkIndex][z];
-            if (block != BlockRegistry.AIR && block != BlockRegistry.OAK_LEAVES) {
-                return false;
-            }
         }
 
-        // Avoid edges to prevent cross-chunk issues
-        if (x < 3 || x >= CHUNK_SIZE - 3 || z < 3 || z >= CHUNK_SIZE - 3) {
-            return false;
+        // Check all blocks in tree space
+        for (int y = 0; y < totalHeight; y++) {
+            GameBlock check = getBlock(x, worldY + y, z);
+            if (check != null && !check.isAir()) {
+                return false;
+            }
         }
 
         return true;
     }
 
-    private void setBlockSafe(int x, int index, int z, GameBlock block) {
-        if (x >= 0 && x < CHUNK_SIZE && index >= 0 && index < CHUNK_HEIGHT && z >= 0 && z < CHUNK_SIZE) {
-            if (blocks[x][index][z].isAir()) {
-                blocks[x][index][z] = block;
+    private void setBlockSafe(int x, int worldY, int z, GameBlock block) {
+        if (x >= 0 && x < CHUNK_SIZE && z >= 0 && z < CHUNK_SIZE && Settings.isValidWorldY(worldY)) {
+            GameBlock current = getBlock(x, worldY, z);
+            if (current != null && current.isAir()) {
+                setBlock(x, worldY, z, block);
             }
         }
     }
@@ -439,44 +471,72 @@ public class Chunk {
      * ✅ Get skylight level (0-15) at world Y coordinate
      */
     public int getSkyLight(int x, int worldY, int z) {
-        int index = toIndex(worldY);
-        if (x < 0 || x >= CHUNK_SIZE || index < 0 || index >= CHUNK_HEIGHT || z < 0 || z >= CHUNK_SIZE) {
+        if (x < 0 || x >= CHUNK_SIZE || z < 0 || z >= CHUNK_SIZE || !Settings.isValidWorldY(worldY)) {
             return 0;
         }
-        return skyLight[x][index][z] & 0xFF;
+
+        int sectionIndex = getSectionIndex(worldY);
+        ChunkSection section = getSection(sectionIndex);
+
+        if (section == null) {
+            return 15; // Empty sections are fully lit
+        }
+
+        int localY = toLocalY(worldY);
+        return section.getSkyLight(x, localY, z);
     }
 
     /**
      * ✅ Set skylight level at world Y coordinate
      */
     public void setSkyLight(int x, int worldY, int z, int level) {
-        int index = toIndex(worldY);
-        if (x < 0 || x >= CHUNK_SIZE || index < 0 || index >= CHUNK_HEIGHT || z < 0 || z >= CHUNK_SIZE) {
+        if (x < 0 || x >= CHUNK_SIZE || z < 0 || z >= CHUNK_SIZE || !Settings.isValidWorldY(worldY)) {
             return;
         }
-        skyLight[x][index][z] = (byte) Math.max(0, Math.min(15, level));
+
+        int sectionIndex = getSectionIndex(worldY);
+        ChunkSection section = getOrCreateSection(sectionIndex);
+
+        if (section != null) {
+            int localY = toLocalY(worldY);
+            section.setSkyLight(x, localY, z, level);
+        }
     }
 
     /**
      * ✅ Get blocklight level (0-15) at world Y coordinate
      */
     public int getBlockLight(int x, int worldY, int z) {
-        int index = toIndex(worldY);
-        if (x < 0 || x >= CHUNK_SIZE || index < 0 || index >= CHUNK_HEIGHT || z < 0 || z >= CHUNK_SIZE) {
+        if (x < 0 || x >= CHUNK_SIZE || z < 0 || z >= CHUNK_SIZE || !Settings.isValidWorldY(worldY)) {
             return 0;
         }
-        return blockLight[x][index][z] & 0xFF;
+
+        int sectionIndex = getSectionIndex(worldY);
+        ChunkSection section = getSection(sectionIndex);
+
+        if (section == null) {
+            return 0; // Empty sections have no block light
+        }
+
+        int localY = toLocalY(worldY);
+        return section.getBlockLight(x, localY, z);
     }
 
     /**
      * ✅ Set blocklight level at world Y coordinate
      */
     public void setBlockLight(int x, int worldY, int z, int level) {
-        int index = toIndex(worldY);
-        if (x < 0 || x >= CHUNK_SIZE || index < 0 || index >= CHUNK_HEIGHT || z < 0 || z >= CHUNK_SIZE) {
+        if (x < 0 || x >= CHUNK_SIZE || z < 0 || z >= CHUNK_SIZE || !Settings.isValidWorldY(worldY)) {
             return;
         }
-        blockLight[x][index][z] = (byte) Math.max(0, Math.min(15, level));
+
+        int sectionIndex = getSectionIndex(worldY);
+        ChunkSection section = getOrCreateSection(sectionIndex);
+
+        if (section != null) {
+            int localY = toLocalY(worldY);
+            section.setBlockLight(x, localY, z, level);
+        }
     }
 
     public boolean isLightInitialized() {
@@ -493,32 +553,45 @@ public class Chunk {
      * ✅ Get block at world Y coordinate
      */
     public GameBlock getBlock(int x, int worldY, int z) {
-        int index = toIndex(worldY);
-        if (x < 0 || x >= CHUNK_SIZE || index < 0 || index >= CHUNK_HEIGHT || z < 0 || z >= CHUNK_SIZE) {
+        if (x < 0 || x >= CHUNK_SIZE || z < 0 || z >= CHUNK_SIZE || !Settings.isValidWorldY(worldY)) {
             return null;
         }
-        return blocks[x][index][z];
+
+        int sectionIndex = getSectionIndex(worldY);
+        ChunkSection section = getSection(sectionIndex);
+
+        if (section == null) {
+            return BlockRegistry.AIR; // Empty sections are all air
+        }
+
+        int localY = toLocalY(worldY);
+        return section.getBlock(x, localY, z);
     }
 
     /**
      * ✅ Set block at world Y coordinate
      */
     public void setBlock(int x, int worldY, int z, GameBlock block) {
-        int index = toIndex(worldY);
-        if (x >= 0 && x < CHUNK_SIZE && index >= 0 && index < CHUNK_HEIGHT && z >= 0 && z < CHUNK_SIZE) {
-            blocks[x][index][z] = block;
+        if (!Settings.isValidWorldY(worldY) || x < 0 || x >= CHUNK_SIZE || z < 0 || z >= CHUNK_SIZE) {
+            return;
+        }
+
+        int sectionIndex = getSectionIndex(worldY);
+        ChunkSection section = getOrCreateSection(sectionIndex);
+
+        if (section != null) {
+            int localY = toLocalY(worldY);
+            section.setBlock(x, localY, z, block);
             needsRebuild = true;
         }
     }
 
     /**
-     * ✅ Get block by array index (for internal use)
+     * ✅ Get block by array index (for internal use - deprecated, use getBlock)
      */
     public GameBlock getBlockByIndex(int x, int index, int z) {
-        if (x < 0 || x >= CHUNK_SIZE || index < 0 || index >= CHUNK_HEIGHT || z < 0 || z >= CHUNK_SIZE) {
-            return null;
-        }
-        return blocks[x][index][z];
+        int worldY = Settings.indexToWorldY(index);
+        return getBlock(x, worldY, z);
     }
 
     // ========== GETTERS ==========
