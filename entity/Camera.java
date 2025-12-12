@@ -80,23 +80,39 @@ public class Camera {
         glTranslatef(-renderX, -renderY, -renderZ);
     }
 
+    /**
+     * ✅ REVISED v2: Apply visual effects (fog, atmosphere) for both underwater and
+     * land
+     * 
+     * - Uses isHeadInWater() for correct POV when partially submerged
+     * - Land fog is BRUTAL like Minecraft Alpha for horror-like atmosphere
+     */
     public void applyUnderwaterEffect() {
-        if (player.isInWater()) {
-            glEnable(GL_FOG);
-            glFogi(GL_FOG_MODE, GL_LINEAR);
-            glFogf(GL_FOG_START, 5.0f);
-            glFogf(GL_FOG_END, 35.0f);
+        applyUnderwaterEffect(null);
+    }
 
-            FloatBuffer fogColorBuffer = BufferUtils.createFloatBuffer(4);
-            fogColorBuffer.put(0.2f);
-            fogColorBuffer.put(0.4f);
-            fogColorBuffer.put(0.7f);
+    public void applyUnderwaterEffect(float[] skyColor) {
+        glEnable(GL_FOG);
+        glHint(GL_FOG_HINT, GL_NICEST);
+
+        FloatBuffer fogColorBuffer = BufferUtils.createFloatBuffer(4);
+
+        // ✅ FIX: Use HEAD position for underwater view, not body
+        if (player.isHeadInWater()) {
+            // ========== UNDERWATER EFFECT ==========
+            glFogi(GL_FOG_MODE, GL_LINEAR);
+            glFogf(GL_FOG_START, 1.0f);
+            glFogf(GL_FOG_END, 20.0f);
+
+            // Blue underwater fog
+            fogColorBuffer.put(0.1f);
+            fogColorBuffer.put(0.3f);
+            fogColorBuffer.put(0.6f);
             fogColorBuffer.put(1.0f);
             fogColorBuffer.flip();
             glFogfv(GL_FOG_COLOR, fogColorBuffer);
 
-            glHint(GL_FOG_HINT, GL_NICEST);
-
+            // Blue tint overlay
             glEnable(GL_BLEND);
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
@@ -110,13 +126,15 @@ public class Camera {
             glLoadIdentity();
 
             glDisable(GL_DEPTH_TEST);
-            glColor4f(0.0f, 0.25f, 0.55f, 0.15f);
+            glDisable(GL_TEXTURE_2D);
+            glColor4f(0.0f, 0.15f, 0.4f, 0.25f);
             glBegin(GL_QUADS);
             glVertex2f(0, 0);
             glVertex2f(1, 0);
             glVertex2f(1, 1);
             glVertex2f(0, 1);
             glEnd();
+            glEnable(GL_TEXTURE_2D);
             glEnable(GL_DEPTH_TEST);
 
             glMatrixMode(GL_PROJECTION);
@@ -126,12 +144,37 @@ public class Camera {
 
             glColor3f(1, 1, 1);
             glDisable(GL_BLEND);
-        } else {
-            if (Settings.ENABLE_FOG) {
-                glEnable(GL_FOG);
-                glFogi(GL_FOG_MODE, GL_EXP2);
-                glFogf(GL_FOG_DENSITY, Settings.FOG_DENSITY);
+
+        } else if (Settings.ENABLE_FOG) {
+            // ========== BRUTAL MINECRAFT ALPHA FOG ==========
+            // Very close, very dense - horror-like atmosphere!
+            glFogi(GL_FOG_MODE, GL_LINEAR);
+
+            // ✅ BRUTAL FOG: Starts VERY close, ends at moderate distance
+            // This creates the classic Minecraft Alpha horror feel
+            float fogStart = 8.0f; // Fog starts just 8 blocks away!
+            float fogEnd = Settings.RENDER_DISTANCE * 8.0f; // Dense fog
+
+            glFogf(GL_FOG_START, fogStart);
+            glFogf(GL_FOG_END, fogEnd);
+
+            // Use sky color for fog (slightly darker for atmosphere)
+            if (skyColor != null) {
+                // Darken sky color slightly for more atmosphere
+                fogColorBuffer.put(skyColor[0] * 0.9f);
+                fogColorBuffer.put(skyColor[1] * 0.9f);
+                fogColorBuffer.put(skyColor[2] * 0.9f);
+            } else {
+                // Default gloomy fog color
+                fogColorBuffer.put(0.6f);
+                fogColorBuffer.put(0.7f);
+                fogColorBuffer.put(0.8f);
             }
+            fogColorBuffer.put(1.0f);
+            fogColorBuffer.flip();
+            glFogfv(GL_FOG_COLOR, fogColorBuffer);
+        } else {
+            glDisable(GL_FOG);
         }
     }
 

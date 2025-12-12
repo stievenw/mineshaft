@@ -139,6 +139,10 @@ public class Chunk {
      * ✅ Set state (for lighting system)
      */
     public void setState(ChunkState state) {
+        if (Settings.DEBUG_CHUNK_LOADING && this.state != state) {
+            System.out.printf("[Chunk %d,%d] State: %s → %s%n",
+                    chunkX, chunkZ, this.state, state);
+        }
         this.state = state;
     }
 
@@ -607,7 +611,15 @@ public class Chunk {
 
         if (section != null) {
             int localY = toLocalY(worldY);
-            section.setSkyLight(x, localY, z, level);
+            if (section.getSkyLight(x, localY, z) != level) {
+                section.setSkyLight(x, localY, z, level);
+
+                // ✅ UPDATE VISUALS: Light change requires mesh update (vertex colors)
+                section.setNeedsLightingUpdate(true);
+                section.setNeedsGeometryRebuild(true);
+                needsLightingUpdate = true;
+                needsGeometryRebuild = true;
+            }
         }
     }
 
@@ -643,7 +655,15 @@ public class Chunk {
 
         if (section != null) {
             int localY = toLocalY(worldY);
-            section.setBlockLight(x, localY, z, level);
+            if (section.getBlockLight(x, localY, z) != level) {
+                section.setBlockLight(x, localY, z, level);
+
+                // ✅ UPDATE VISUALS: Light change requires mesh update (vertex colors)
+                section.setNeedsLightingUpdate(true);
+                section.setNeedsGeometryRebuild(true);
+                needsLightingUpdate = true;
+                needsGeometryRebuild = true;
+            }
         }
     }
 

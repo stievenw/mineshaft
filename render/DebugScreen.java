@@ -5,6 +5,7 @@ import com.mineshaft.entity.Camera;
 import com.mineshaft.player.GameMode;
 import com.mineshaft.world.World;
 import com.mineshaft.core.Settings;
+import com.mineshaft.core.TimeOfDay; // ✅ NEW: For global sky light level
 
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.system.MemoryStack;
@@ -103,7 +104,8 @@ public class DebugScreen {
         System.out.println("Chunk borders: " + (showChunkBorders ? "ON" : "OFF"));
     }
 
-    public void render(Camera camera, World world, GameMode gameMode, int fps, int tps, boolean vsyncEnabled) {
+    public void render(Camera camera, World world, GameMode gameMode, int fps, int tps, boolean vsyncEnabled,
+            TimeOfDay timeOfDay) {
         if (!visible)
             return;
 
@@ -129,7 +131,7 @@ public class DebugScreen {
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-        renderLeftSide(camera, world, gameMode, fps, tps);
+        renderLeftSide(camera, world, gameMode, fps, tps, timeOfDay); // ✅ Pass TimeOfDay
         renderRightSide(vsyncEnabled);
 
         glMatrixMode(GL_PROJECTION);
@@ -140,7 +142,7 @@ public class DebugScreen {
         glPopAttrib();
     }
 
-    private void renderLeftSide(Camera camera, World world, GameMode gameMode, int fps, int tps) {
+    private void renderLeftSide(Camera camera, World world, GameMode gameMode, int fps, int tps, TimeOfDay timeOfDay) {
         float x = MARGIN;
         float y = MARGIN;
 
@@ -180,13 +182,34 @@ public class DebugScreen {
         y += 2;
 
         if (world != null) {
-            int lightLevel = world.getLight(blockX, blockY, blockZ);
-            int skyLight = world.getSkyLight(blockX, blockY, blockZ);
+            int storedSkyLight = world.getSkyLight(blockX, blockY, blockZ);
             int blockLight = world.getBlockLight(blockX, blockY, blockZ);
 
+            // ✅ Calculate EFFECTIVE sky light (what's actually rendered)
+            int effectiveSkyLight = storedSkyLight;
+            if (timeOfDay != null && storedSkyLight > 0) {
+                int globalSkyLight = timeOfDay.getSkylightLevel();
+                // Apply same scaling formula as renderer would
+                effectiveSkyLight = (storedSkyLight * globalSkyLight) / 15;
+            }
+
+            int combinedLight = Math.max(effectiveSkyLight, blockLight);
+
+            // Display effective light (what you see)
             drawText(String.format("Light: %d (Sky: %d, Block: %d)",
-                    lightLevel, skyLight, blockLight), x, y, 1, 1, 0);
+                    combinedLight, effectiveSkyLight, blockLight), x, y, 1, 1, 0);
             y += LINE_HEIGHT;
+
+            // ✅ Show time info for debugging
+            if (timeOfDay != null) {
+                int globalSkyLight = timeOfDay.getSkylightLevel();
+                float brightness = timeOfDay.getBrightness();
+                String phase = timeOfDay.getTimePhase();
+
+                drawText(String.format("%s | Global Sky: %d | Brightness: %.2f",
+                        phase, globalSkyLight, brightness), x, y, 0.7f, 0.7f, 0.7f);
+                y += LINE_HEIGHT;
+            }
         }
         y += 2;
 
@@ -453,5 +476,65 @@ public class DebugScreen {
         if (font != null) {
             font.cleanup();
         }
+    }
+
+    /**
+     * ✅ Render Loading Screen (Minecraft Style)
+     */
+    public void drawLoadingScreen(int loadedChunks, int totalToLoad, String status) {
+        updateWindowSize();
+
+        // 1. Draw Dirt Background
+        glPushAttrib(GL_ALL_ATTRIB_BITS);
+
+        glMatrixMode(GL_PROJECTION);
+        glPushMatrix();
+        glLoadIdentity();
+        glOrtho(0, windowWidth, windowHeight, 0, -1, 1);
+
+        glMatrixMode(GL_MODELVIEW);
+        glPushMatrix();
+        glLoadIdentity();
+
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_LIGHTING);
+        glDisable(GL_TEXTURE_2D); // Simple color
+        glDisable(GL_CULL_FACE); // ✅ Fix: Ensure quad is visible regardless of winding
+
+        // Dirt Color (Brown-ish) background
+        glColor4f(0.15f, 0.1f, 0.08f, 1.0f);
+        glBegin(GL_QUADS);
+        glVertex2f(0, 0);
+        glVertex2f(windowWidth, 0);
+        glVertex2f(windowWidth, windowHeight);
+        glVertex2f(0, windowHeight);
+        glEnd();
+
+        // 2. Draw Text "Loading World..."
+        // Re-enable states for font rendering
+        glEnable(GL_TEXTURE_2D);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+        String title = "Loading Terrain...";
+        String progress = (int) ((loadedChunks / (float) totalToLoad) * 100) + "%";
+
+        float scale = 3.0f;
+        int titleW = font.getStringWidth(title, scale);
+        int progW = font.getStringWidth(progress, 2.0f);
+        int statW = font.getStringWidth(status, 2.0f);
+
+        float cx = windowWidth / 2.0f;
+        float cy = windowHeight / 2.0f;
+
+        font.drawStringWithShadow(title, cx - titleW / 2, cy - 50, 1, 1, 1, 1, scale);
+        font.drawStringWithShadow(progress, cx - progW / 2, cy + 10, 0.8f, 0.8f, 0.8f, 1, 2.0f);
+        font.drawStringWithShadow(status, cx - statW / 2, cy + 40, 0.7f, 0.7f, 0.7f, 1, 2.0f);
+
+        glMatrixMode(GL_PROJECTION);
+        glPopMatrix();
+        glMatrixMode(GL_MODELVIEW);
+        glPopMatrix();
+        glPopAttrib();
     }
 }

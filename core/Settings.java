@@ -115,33 +115,42 @@ public class Settings {
     public static final float PLAYER_VISIBILITY_MULTIPLIER = 10.0f;
 
     // ================================================================
-    // ✅ NEW: CHUNK LOADING PERFORMANCE
+    // ✅ NEW: CHUNK LOADING PERFORMANCE (OPTIMIZED v2)
     // ================================================================
 
     /**
      * Maximum chunks to load per frame (prevents lag spikes)
+     * ✅ UNLIMITED: Maximize throughput for high-end PCs
      */
-    public static final int MAX_CHUNKS_LOAD_PER_FRAME = 2;
+    public static final int MAX_CHUNKS_LOAD_PER_FRAME = 256;
 
     /**
      * Maximum chunks to unload per frame
      */
-    public static final int MAX_CHUNKS_UNLOAD_PER_FRAME = 4;
+    public static final int MAX_CHUNKS_UNLOAD_PER_FRAME = 256;
 
     /**
      * Maximum mesh builds per frame (VBO creation)
+     * ✅ UNLIMITED: Clear build queue instantly
      */
-    public static final int MAX_MESH_BUILDS_PER_FRAME = 3;
+    public static final int MAX_MESH_BUILDS_PER_FRAME = 10000;
 
     /**
      * Maximum VBO uploads per frame (GPU operations)
+     * ✅ UNLIMITED: Clear upload queue instantly
      */
-    public static final int MAX_VBO_UPLOADS_PER_FRAME = 5;
+    public static final int MAX_VBO_UPLOADS_PER_FRAME = 10000;
 
     /**
      * Chunk unload buffer (extra distance before unloading)
      */
     public static final int CHUNK_UNLOAD_BUFFER = 2;
+
+    /**
+     * ✅ NEW: Thread counts - dynamic based on CPU
+     */
+    public static final int CHUNK_LOAD_THREADS = Math.max(4, Runtime.getRuntime().availableProcessors());
+    public static final int MESH_BUILD_THREADS = Math.max(2, Runtime.getRuntime().availableProcessors() / 2);
 
     /**
      * Priority loading: closer chunks load first
@@ -178,7 +187,7 @@ public class Settings {
 
     public static final boolean ENABLE_FOG = true;
     public static final float FOG_DENSITY = 0.012f;
-    public static final boolean FRUSTUM_CULLING = true;
+    public static final boolean FRUSTUM_CULLING = false; // Disabled to fix edge flickering
     public static final boolean BACKFACE_CULLING = true;
     public static final int CHUNK_UPDATES_PER_FRAME = 4;
     public static final boolean REBUILD_DIRTY_CHUNKS = true;
@@ -221,8 +230,7 @@ public class Settings {
     public static final int MAX_LOADED_CHUNKS = 2048; // Increased for larger distances
     public static final boolean AGGRESSIVE_CHUNK_UNLOAD = false;
     public static final boolean MULTITHREADED_CHUNK_LOADING = true;
-    public static final int CHUNK_LOAD_THREADS = 4;
-    public static final int MESH_BUILD_THREADS = 2;
+    // Thread counts defined in CHUNK LOADING PERFORMANCE section above
     public static final boolean USE_VBO = true;
     public static final boolean DYNAMIC_VBO_UPDATES = true;
 
@@ -239,7 +247,7 @@ public class Settings {
     // ================================================================
 
     public static boolean DEBUG_MODE = false;
-    public static boolean DEBUG_CHUNK_LOADING = false;
+    public static boolean DEBUG_CHUNK_LOADING = true;
     public static boolean DEBUG_LIGHTING = false;
     public static boolean DEBUG_PHYSICS = false;
     public static boolean DEBUG_CAMERA = false;

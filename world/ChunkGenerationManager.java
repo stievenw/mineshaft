@@ -1,12 +1,17 @@
 // src/main/java/com/mineshaft/world/ChunkGenerationManager.java
 package com.mineshaft.world;
 
+import com.mineshaft.block.BlockRegistry;
+import com.mineshaft.block.GameBlock;
+import com.mineshaft.core.Settings;
+
 import java.util.*;
 import java.util.concurrent.*;
 
 /**
- * ⚡ Async chunk terrain generation system
- * - Generates terrain in background threads
+ * ⚡ OPTIMIZED Async chunk terrain generation system v2.0
+ * - Dynamic thread count based on CPU cores
+ * - Higher throughput for faster loading
  * - Prioritizes chunks closest to player
  * - Thread-safe and efficient
  */
@@ -17,9 +22,10 @@ public class ChunkGenerationManager {
     private final Set<ChunkPos> generating = ConcurrentHashMap.newKeySet();
     private final Queue<Chunk> pendingLighting = new ConcurrentLinkedQueue<>();
 
-    // ⚙️ Configuration
-    private static final int GENERATOR_THREADS = 2; // 2 threads for generation
-    private static final int MAX_GENERATIONS_PER_FRAME = 4; // Max new tasks per frame
+    // ⚙️ Configuration - ✅ INCREASED for faster loading
+    private static final int GENERATOR_THREADS = Math.max(4, Runtime.getRuntime().availableProcessors());
+    private static final int MAX_GENERATIONS_PER_FRAME = Math.max(8, Runtime.getRuntime().availableProcessors() * 2);
+    private static final int MAX_PENDING_CHUNKS = 256; // Prevent queue bloat
 
     /**
      * Task for chunk generation with priority
@@ -38,11 +44,12 @@ public class ChunkGenerationManager {
         generatorThreadPool = Executors.newFixedThreadPool(GENERATOR_THREADS, r -> {
             Thread t = new Thread(r, "ChunkGenerator");
             t.setDaemon(true);
-            t.setPriority(Thread.NORM_PRIORITY - 1); // Lower than render thread
+            t.setPriority(Thread.NORM_PRIORITY); // ✅ Normal priority for faster generation
             return t;
         });
 
-        System.out.println("[ChunkGen] Manager initialized with " + GENERATOR_THREADS + " threads");
+        System.out.println("[ChunkGen] Manager initialized with " + GENERATOR_THREADS + " threads, max "
+                + MAX_GENERATIONS_PER_FRAME + "/frame");
     }
 
     /**
@@ -57,6 +64,11 @@ public class ChunkGenerationManager {
         // Skip if already generated or generating
         if (chunk.getState() != ChunkState.EMPTY || generating.contains(pos)) {
             return;
+        }
+
+        // ✅ Prevent queue bloat
+        if (generationQueue.size() >= MAX_PENDING_CHUNKS) {
+            return; // Drop oldest tasks to keep queue size manageable
         }
 
         generationQueue.offer(new ChunkGenTask(chunk, playerDistanceSq));
@@ -103,14 +115,27 @@ public class ChunkGenerationManager {
     }
 
     /**
-     * Generate chunk terrain in background thread
+     * ✅ REWRITTEN: Generate chunk terrain + lighting in background thread
+     * 
+     * Key changes:
+     * - Lighting done immediately in same thread (no waiting for main thread)
+     * - Chunk becomes READY immediately
+     * - Much faster chunk loading
      */
     private void generateChunkAsync(Chunk chunk, ChunkPos pos) {
         try {
             // This runs in background thread - no OpenGL calls allowed!
             chunk.generate();
 
-            // Queue for lighting calculation (must be done in main thread)
+            // ✅ INSTANT LIGHTING: Done here in background thread
+            initializeChunkLighting(chunk);
+
+            // ✅ Mark as ready immediately - no LIGHT_PENDING phase!
+            chunk.setLightInitialized(true);
+            chunk.setState(ChunkState.READY);
+            chunk.setNeedsGeometryRebuild(true);
+
+            // Queue for main thread notification (optional, for tracking)
             pendingLighting.offer(chunk);
 
         } catch (Exception e) {
@@ -123,15 +148,174 @@ public class ChunkGenerationManager {
     }
 
     /**
-     * Process chunks that finished generation (move to lighting phase)
+     * ✅ PROPER Minecraft-style lighting with horizontal propagation
+     * 
+     * Step 1: Vertical pass - propagate skylight down from top
+     * Step 2: Horizontal BFS - spread light into caves/overhangs
+     * Step 3: Blocklight BFS - spread torch/glowstone light
+     */
+    private void initializeChunkLighting(Chunk chunk) {
+        int skyLight = 15;
+
+        // ========== STEP 1: Vertical skylight propagation ==========
+        // Mark all sky-exposed blocks with light level 15
+        // Track blocks that can spread light horizontally
+        java.util.Queue<int[]> lightQueue = new java.util.LinkedList<>();
+
+        for (int x = 0; x < Chunk.CHUNK_SIZE; x++) {
+            for (int z = 0; z < Chunk.CHUNK_SIZE; z++) {
+                int currentLight = skyLight;
+
+                for (int index = Chunk.CHUNK_HEIGHT - 1; index >= 0; index--) {
+                    int worldY = Settings.indexToWorldY(index);
+                    GameBlock block = chunk.getBlock(x, worldY, z);
+
+                    if (block == null || block.isAir()) {
+                        chunk.setSkyLight(x, worldY, z, currentLight);
+                        // Queue for horizontal spread if has light
+                        if (currentLight > 1) {
+                            lightQueue.add(new int[] { x, worldY, z, currentLight });
+                        }
+                    } else if (block == BlockRegistry.WATER || block == BlockRegistry.OAK_LEAVES) {
+                        currentLight = Math.max(0, currentLight - 1);
+                        chunk.setSkyLight(x, worldY, z, currentLight);
+                        if (currentLight > 1) {
+                            lightQueue.add(new int[] { x, worldY, z, currentLight });
+                        }
+                    } else if (block.isSolid()) {
+                        currentLight = 0;
+                        chunk.setSkyLight(x, worldY, z, 0);
+                    } else {
+                        chunk.setSkyLight(x, worldY, z, currentLight);
+                        if (currentLight > 1) {
+                            lightQueue.add(new int[] { x, worldY, z, currentLight });
+                        }
+                    }
+                }
+            }
+        }
+
+        // ========== STEP 2: Horizontal BFS light spread ==========
+        // Light spreads into caves, decreasing by 1 per block
+        int[][] directions = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
+
+        while (!lightQueue.isEmpty()) {
+            int[] node = lightQueue.poll();
+            int x = node[0];
+            int y = node[1];
+            int z = node[2];
+            int light = node[3];
+
+            // Try to spread to neighbors
+            for (int[] dir : directions) {
+                int nx = x + dir[0];
+                int ny = y + dir[1];
+                int nz = z + dir[2];
+
+                // Skip out of chunk bounds
+                if (nx < 0 || nx >= Chunk.CHUNK_SIZE)
+                    continue;
+                if (nz < 0 || nz >= Chunk.CHUNK_SIZE)
+                    continue;
+                if (!Settings.isValidWorldY(ny))
+                    continue;
+
+                // Get neighbor block
+                GameBlock neighbor = chunk.getBlock(nx, ny, nz);
+
+                // Skip solid blocks (they block light)
+                if (neighbor != null && neighbor.isSolid() &&
+                        neighbor != BlockRegistry.WATER && neighbor != BlockRegistry.OAK_LEAVES) {
+                    continue;
+                }
+
+                // Calculate new light level (decay by 1)
+                int newLight = light - 1;
+                if (neighbor == BlockRegistry.WATER) {
+                    newLight -= 2; // Water absorbs more light
+                }
+
+                if (newLight <= 0)
+                    continue;
+
+                // Only update if new light is brighter
+                int currentNeighborLight = chunk.getSkyLight(nx, ny, nz);
+                if (newLight > currentNeighborLight) {
+                    chunk.setSkyLight(nx, ny, nz, newLight);
+                    // Continue spreading if still has light
+                    if (newLight > 1) {
+                        lightQueue.add(new int[] { nx, ny, nz, newLight });
+                    }
+                }
+            }
+        }
+
+        // ========== STEP 3: Block light sources (torches, glowstone) ==========
+        java.util.Queue<int[]> blockLightQueue = new java.util.LinkedList<>();
+
+        for (int x = 0; x < Chunk.CHUNK_SIZE; x++) {
+            for (int z = 0; z < Chunk.CHUNK_SIZE; z++) {
+                for (int index = 0; index < Chunk.CHUNK_HEIGHT; index++) {
+                    int worldY = Settings.indexToWorldY(index);
+                    GameBlock block = chunk.getBlock(x, worldY, z);
+
+                    if (block != null && block.getLightLevel() > 0) {
+                        int lightLevel = block.getLightLevel();
+                        chunk.setBlockLight(x, worldY, z, lightLevel);
+                        blockLightQueue.add(new int[] { x, worldY, z, lightLevel });
+                    }
+                }
+            }
+        }
+
+        // Spread block light using BFS
+        while (!blockLightQueue.isEmpty()) {
+            int[] node = blockLightQueue.poll();
+            int x = node[0];
+            int y = node[1];
+            int z = node[2];
+            int light = node[3];
+
+            for (int[] dir : directions) {
+                int nx = x + dir[0];
+                int ny = y + dir[1];
+                int nz = z + dir[2];
+
+                if (nx < 0 || nx >= Chunk.CHUNK_SIZE)
+                    continue;
+                if (nz < 0 || nz >= Chunk.CHUNK_SIZE)
+                    continue;
+                if (!Settings.isValidWorldY(ny))
+                    continue;
+
+                GameBlock neighbor = chunk.getBlock(nx, ny, nz);
+                if (neighbor != null && neighbor.isSolid() &&
+                        neighbor != BlockRegistry.WATER && neighbor != BlockRegistry.OAK_LEAVES) {
+                    continue;
+                }
+
+                int newLight = light - 1;
+                if (newLight <= 0)
+                    continue;
+
+                int currentNeighborLight = chunk.getBlockLight(nx, ny, nz);
+                if (newLight > currentNeighborLight) {
+                    chunk.setBlockLight(nx, ny, nz, newLight);
+                    if (newLight > 1) {
+                        blockLightQueue.add(new int[] { nx, ny, nz, newLight });
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Process chunks that finished generation (tracking only now)
      */
     private void processCompletedChunks() {
-        Chunk chunk;
-        while ((chunk = pendingLighting.poll()) != null) {
-            if (chunk.getState() == ChunkState.GENERATED) {
-                chunk.setState(ChunkState.LIGHT_PENDING);
-                // Lighting will be handled by LightingEngine in World.updateLighting()
-            }
+        // Drain the queue - chunks are already READY
+        while (pendingLighting.poll() != null) {
+            // Nothing to do - chunks processed in generateChunkAsync
         }
     }
 

@@ -12,7 +12,7 @@ import com.mineshaft.world.lighting.LightingEngine;
 import java.util.*;
 
 /**
- * ⚡ OPTIMIZED World v3.0 - Minecraft-Style Lighting System
+ * ⚡ OPTIMIZED World v4.0 - With ProLightingEngine for cross-chunk lighting
  * 
  * ============================================================================
  * MINECRAFT-STYLE LIGHTING CONCEPT:
@@ -22,14 +22,14 @@ import java.util.*;
  * - Skylight: Always 15 for blocks that can see the sky
  * - Blocklight: Based on nearby light sources (torches, etc.)
  * 
- * 2. LIGHT VALUES DO NOT CHANGE WITH TIME OF DAY!
- * - Time change only affects RENDER brightness, not light values
- * - ChunkRenderer.setTimeOfDayBrightness() handles this
- * - NO mesh rebuild when time changes!
+ * 2. LIGHT PROPAGATES INTO CAVES:
+ * - ProLightingEngine handles cross-chunk BFS propagation
+ * - Light gradually decreases (15→14→13→...→0)
  * 
  * 3. MESH REBUILD only happens when:
  * - Block is placed/removed (geometry + shadow propagation)
  * - Chunk first loads
+ * - Light values change
  * 
  * ============================================================================
  */
@@ -37,7 +37,8 @@ public class World {
     private Map<ChunkPos, Chunk> chunks = new HashMap<>();
     private long seed;
     private ChunkRenderer renderer = new ChunkRenderer();
-    private LightingEngine lightingEngine;
+    // private LightingEngine lightingEngine; // REMOVED: Duplicate system
+    private com.mineshaft.world.lighting.SimpleLightEngine simpleLightEngine; // ✅ NEW: Better cave lighting
     private ChunkGenerationManager generationManager;
 
     private int renderDistance = Settings.RENDER_DISTANCE;
@@ -51,8 +52,9 @@ public class World {
     public World(TimeOfDay timeOfDay) {
         this.timeOfDay = timeOfDay;
         renderer.setWorld(this);
-        lightingEngine = new LightingEngine(this, timeOfDay);
-        renderer.setLightingEngine(lightingEngine);
+        // lightingEngine = new LightingEngine(this, timeOfDay); // REMOVED
+        simpleLightEngine = new com.mineshaft.world.lighting.SimpleLightEngine(this); // ✅ NEW
+        // renderer.setLightingEngine(lightingEngine); // REMOVED
         generationManager = new ChunkGenerationManager();
 
         // ✅ Initialize renderer with current time brightness
@@ -61,7 +63,7 @@ public class World {
         }
 
         System.out.println(
-                "[World] Created with Minecraft-style lighting (render distance: " + renderDistance + " chunks)");
+                "[World] Created with SimpleLightEngine (render distance: " + renderDistance + " chunks)");
     }
 
     /**
@@ -82,9 +84,8 @@ public class World {
         return timeOfDay;
     }
 
-    public LightingEngine getLightingEngine() {
-        return lightingEngine;
-    }
+    // public LightingEngine getLightingEngine() { return lightingEngine; } //
+    // REMOVED
 
     public ChunkRenderer getRenderer() {
         return renderer;
@@ -120,40 +121,81 @@ public class World {
     // ========== CHUNK MANAGEMENT ==========
 
     /**
-     * ✅ OPTIMIZED - Async chunk loading
+     * ✅ FIXED: Priority-based chunk loading (spiral from player)
+     * 
+     * Key fix: Chunks are now loaded in distance order, not random HashSet order.
+     * This ensures chunks near player always load first, and edge chunks
+     * are processed in order when player approaches.
      */
     public void updateChunks(int centerChunkX, int centerChunkZ) {
-        Set<ChunkPos> chunksToLoad = new HashSet<>();
-        Set<ChunkPos> chunksToUnload = new HashSet<>();
+        // ========== STEP 1: Build sorted list of chunks to load (by distance)
+        // ==========
+        java.util.List<ChunkPos> chunksToLoad = new java.util.ArrayList<>();
 
-        // Calculate which chunks should be loaded
         for (int x = centerChunkX - renderDistance; x <= centerChunkX + renderDistance; x++) {
             for (int z = centerChunkZ - renderDistance; z <= centerChunkZ + renderDistance; z++) {
                 int dx = x - centerChunkX;
                 int dz = z - centerChunkZ;
-                if (dx * dx + dz * dz <= renderDistance * renderDistance) {
-                    ChunkPos pos = new ChunkPos(x, z);
-                    chunksToLoad.add(pos);
+                int distSq = dx * dx + dz * dz;
+
+                if (distSq <= renderDistance * renderDistance) {
+                    chunksToLoad.add(new ChunkPos(x, z));
                 }
             }
         }
 
-        // Find chunks to unload
+        // ✅ Sort by distance (closest first)
+        final int cx = centerChunkX;
+        final int cz = centerChunkZ;
+        chunksToLoad.sort((a, b) -> {
+            int distA = (a.x - cx) * (a.x - cx) + (a.z - cz) * (a.z - cz);
+            int distB = (b.x - cx) * (b.x - cx) + (b.z - cz) * (b.z - cz);
+            return Integer.compare(distA, distB);
+        });
+
+        // ========== STEP 2: Unload distant chunks ==========
+        Set<ChunkPos> shouldExist = new HashSet<>(chunksToLoad);
+        java.util.List<ChunkPos> chunksToUnload = new java.util.ArrayList<>();
+
         for (ChunkPos pos : chunks.keySet()) {
-            if (!chunksToLoad.contains(pos)) {
+            if (!shouldExist.contains(pos)) {
                 chunksToUnload.add(pos);
             }
         }
 
-        // Unload chunks
+        // Unload in batches
+        int unloaded = 0;
         for (ChunkPos pos : chunksToUnload) {
+            if (unloaded >= Settings.MAX_CHUNKS_UNLOAD_PER_FRAME)
+                break;
             unloadChunkInternal(pos);
+            unloaded++;
         }
 
-        // Load new chunks
+        // ========== STEP 3: Load new chunks (in distance order) ==========
+        int loaded = 0;
         for (ChunkPos pos : chunksToLoad) {
+            if (loaded >= Settings.MAX_CHUNKS_LOAD_PER_FRAME * 2)
+                break; // Allow more loading
+
             if (!chunks.containsKey(pos)) {
                 loadChunkInternal(pos.x, pos.z, centerChunkX, centerChunkZ);
+                loaded++;
+            }
+        }
+
+        // ========== STEP 4: Force-process chunks at edge that are stuck ==========
+        // This fixes chunks that got queued but never completed
+        for (ChunkPos pos : chunksToLoad) {
+            Chunk chunk = chunks.get(pos);
+            if (chunk != null && chunk.getState() != ChunkState.READY) {
+                // Check if this chunk has been stuck for too long
+                if (chunk.getState() == ChunkState.EMPTY) {
+                    // Re-queue for generation
+                    int dx = pos.x - centerChunkX;
+                    int dz = pos.z - centerChunkZ;
+                    generationManager.queueGeneration(chunk, dx * dx + dz * dz);
+                }
             }
         }
 
@@ -163,17 +205,30 @@ public class World {
         // Update lighting for generated chunks
         updateLighting();
 
+        // ✅ Process cross-chunk light propagation
+        // ProLightingEngine removed in favor of SimpleLightEngine
+
+        // ✅ NEW: Update sun light direction and sky light level
+        // if (lightingEngine != null) {
+        // lightingEngine.updateSunLight();
+        // }
+
         logChunkCount();
     }
 
     /**
-     * ✅ Internal: Load chunk and queue for async generation
+     * ✅ REWRITTEN: Direct chunk loading with immediate lighting
+     * 
+     * Key changes:
+     * - Terrain + lighting done together in async thread
+     * - No separate LIGHT_PENDING phase
+     * - Chunk becomes READY immediately after async complete
      */
     private void loadChunkInternal(int chunkX, int chunkZ, int playerChunkX, int playerChunkZ) {
         ChunkPos pos = new ChunkPos(chunkX, chunkZ);
 
         if (!chunks.containsKey(pos)) {
-            // Create chunk WITHOUT generating terrain (instant)
+            // Create chunk immediately and add to map
             Chunk chunk = new Chunk(chunkX, chunkZ);
             chunks.put(pos, chunk);
 
@@ -182,7 +237,7 @@ public class World {
             int dz = chunkZ - playerChunkZ;
             double distSq = dx * dx + dz * dz;
 
-            // Queue for async terrain generation
+            // Queue for async generation (includes lighting)
             generationManager.queueGeneration(chunk, distSq);
         }
     }
@@ -194,34 +249,37 @@ public class World {
         Chunk chunk = chunks.remove(pos);
         if (chunk != null) {
             // Cancel any pending lighting updates
-            lightingEngine.cancelChunkUpdates(chunk);
+            // if (lightingEngine != null) {
+            // lightingEngine.cancelChunkUpdates(chunk);
+            // }
 
             // Remove from renderer
-            renderer.removeChunk(chunk);
+            if (renderer != null) {
+                renderer.removeChunk(chunk);
+            }
         }
     }
 
     /**
-     * ✅ REVISED: Initialize lighting for newly generated chunks
+     * ✅ REVISED v2: Initialize lighting using SimpleLightEngine
      * 
-     * MINECRAFT-STYLE: Skylight is always 15 (full) - time brightness is applied at
-     * render time
+     * Uses proper BFS flood-fill for cave lighting.
      */
     private void updateLighting() {
+        int processed = 0;
+        int maxPerFrame = 8; // Process a few chunks per frame to avoid lag
+
         for (Chunk chunk : chunks.values()) {
+            if (processed >= maxPerFrame)
+                break;
+
             // Only process chunks that have terrain generated but no lighting yet
             if (chunk.getState() == ChunkState.LIGHT_PENDING && !chunk.isLightInitialized()) {
-                // ✅ MINECRAFT-STYLE: Always use full skylight (15)
-                // Time-of-day brightness is applied by ChunkRenderer, not here
-                lightingEngine.initializeSkylightForChunk(chunk);
-                lightingEngine.initializeBlocklightForChunk(chunk);
-
-                chunk.setLightInitialized(true);
-                chunk.setState(ChunkState.READY);
-                chunk.setNeedsGeometryRebuild(true); // Initial mesh generation
-
-                // Mark neighbors for rebuild (edge seams)
-                markNeighborsForRebuild(chunk.getChunkX(), chunk.getChunkZ());
+                // ✅ Use SimpleLightEngine for proper cave lighting
+                if (simpleLightEngine != null) {
+                    simpleLightEngine.initializeChunk(chunk);
+                }
+                processed++;
             }
         }
     }
@@ -251,14 +309,12 @@ public class World {
         if (chunk != null && !chunk.isGenerated()) {
             chunk.generate();
 
-            // Initialize lighting after generation
+            // Initialize lighting after generation - FAST MODE
             if (chunk.isGenerated() && !chunk.isLightInitialized()) {
-                // ✅ MINECRAFT-STYLE: Always use full skylight
-                lightingEngine.initializeSkylightForChunk(chunk);
-                lightingEngine.initializeBlocklightForChunk(chunk);
-                chunk.setLightInitialized(true);
-                chunk.setState(ChunkState.READY);
-                chunk.setNeedsGeometryRebuild(true); // Need initial mesh
+                chunk.setState(ChunkState.LIGHT_PENDING);
+                if (simpleLightEngine != null) {
+                    simpleLightEngine.initializeChunk(chunk);
+                }
             }
         }
     }
@@ -271,9 +327,9 @@ public class World {
         Chunk chunk = chunks.remove(pos);
 
         if (chunk != null) {
-            if (lightingEngine != null) {
-                lightingEngine.cancelChunkUpdates(chunk);
-            }
+            // if (lightingEngine != null) {
+            // lightingEngine.cancelChunkUpdates(chunk);
+            // }
 
             if (renderer != null) {
                 renderer.removeChunk(chunk);
@@ -284,7 +340,7 @@ public class World {
     /**
      * ✅ Mark neighbor chunks for mesh rebuild
      */
-    private void markNeighborsForRebuild(int chunkX, int chunkZ) {
+    public void markNeighborsForRebuild(int chunkX, int chunkZ) {
         int[][] neighbors = {
                 { chunkX - 1, chunkZ },
                 { chunkX + 1, chunkZ },
@@ -310,10 +366,10 @@ public class World {
      * This DOES trigger lighting recalculation and mesh rebuild.
      */
     public void updateSkylightForBlockChange(int chunkX, int chunkZ) {
-        Chunk chunk = getChunk(chunkX, chunkZ);
-        if (chunk != null && chunk.isGenerated() && chunk.isLightInitialized()) {
-            lightingEngine.queueChunkForLightUpdate(chunk);
-        }
+        // Chunk chunk = getChunk(chunkX, chunkZ);
+        // if (chunk != null && chunk.isGenerated() && chunk.isLightInitialized()) {
+        // lightingEngine.queueChunkForLightUpdate(chunk);
+        // }
     }
 
     /**
@@ -350,9 +406,9 @@ public class World {
      * ✅ Update sun lighting direction (for visual effects only)
      */
     public void updateSunLight() {
-        if (lightingEngine != null) {
-            lightingEngine.updateSunLight();
-        }
+        // if (lightingEngine != null) {
+        // lightingEngine.updateSunLight();
+        // }
     }
 
     // ========== BLOCK ACCESS ==========
@@ -379,7 +435,7 @@ public class World {
     }
 
     /**
-     * ✅ REVISED: Set block with proper lighting update
+     * ✅ REVISED v2: Set block with proper lighting + immediate visual update
      */
     public void setBlock(int worldX, int worldY, int worldZ, GameBlock block) {
         if (!Settings.isValidWorldY(worldY)) {
@@ -396,26 +452,26 @@ public class World {
             int localX = Math.floorMod(worldX, Chunk.CHUNK_SIZE);
             int localZ = Math.floorMod(worldZ, Chunk.CHUNK_SIZE);
 
-            // Get old block to check if lighting needs update
-            GameBlock oldBlock = chunk.getBlock(localX, worldY, localZ);
-
             // Set the new block
             chunk.setBlock(localX, worldY, localZ, block);
 
-            // ✅ Update lighting based on block change
-            if (block.isAir()) {
-                lightingEngine.onBlockRemoved(chunk, localX, worldY, localZ);
-            } else {
-                lightingEngine.onBlockPlaced(chunk, localX, worldY, localZ, block);
+            // ✅ IMMEDIATE: Force geometry rebuild with high priority
+            chunk.setNeedsGeometryRebuild(true);
+
+            // Request immediate mesh rebuild for responsive block breaking
+            if (renderer != null) {
+                renderer.requestImmediateRebuild(chunk);
             }
 
-            // ✅ Check if shadow propagation changed (solid block placed/removed)
-            boolean oldBlockedLight = oldBlock != null && oldBlock.isSolid() && !oldBlock.isAir();
-            boolean newBlockedLight = block != null && block.isSolid() && !block.isAir();
-
-            if (oldBlockedLight != newBlockedLight) {
-                // Shadow propagation changed - update skylight for this column
-                updateSkylightForBlockChange(chunkX, chunkZ);
+            // ✅ Use SimpleLightEngine for proper cave lighting
+            if (simpleLightEngine != null) {
+                if (block == null || block.isAir()) {
+                    // Block broken - light floods in
+                    simpleLightEngine.onBlockBroken(worldX, worldY, worldZ);
+                } else {
+                    // Block placed - may block light + propagate darkness
+                    simpleLightEngine.onBlockPlaced(worldX, worldY, worldZ, block);
+                }
             }
 
             // Mark neighbor chunks for rebuild if block is on edge
@@ -551,7 +607,7 @@ public class World {
      * ✅ Get lighting engine pending updates
      */
     public int getPendingLightUpdates() {
-        return lightingEngine != null ? lightingEngine.getPendingUpdatesCount() : 0;
+        return 0; // lightingEngine != null ? lightingEngine.getPendingUpdatesCount() : 0;
     }
 
     private void logChunkCount() {
@@ -577,9 +633,9 @@ public class World {
             generationManager.shutdown();
         }
 
-        if (lightingEngine != null) {
-            lightingEngine.shutdown();
-        }
+        // if (lightingEngine != null) {
+        // lightingEngine.shutdown();
+        // }
 
         renderer.cleanup();
         chunks.clear();

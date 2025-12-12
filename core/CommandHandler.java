@@ -11,6 +11,7 @@ import com.mineshaft.world.World;
  */
 public class CommandHandler {
 
+    @SuppressWarnings("unused") // Stored for future command implementations
     private final World world;
     private final Player player; // ✅ Changed from Camera to Player
     private final TimeOfDay timeOfDay;
@@ -122,7 +123,8 @@ public class CommandHandler {
                         }
                 }
 
-                world.updateSkylightForTimeChange();
+                // Time-of-day brightness is automatically updated by the game loop
+                // No need to call updateSkylightForTimeChange() - that's deprecated
                 break;
 
             case "add":
@@ -135,7 +137,7 @@ public class CommandHandler {
                     long add = Long.parseLong(args[2]);
                     timeOfDay.setTimeOfDay(timeOfDay.getWorldTime() + add);
                     chat.addMessage("Added " + add + " ticks to time");
-                    world.updateSkylightForTimeChange();
+                    // Time-of-day brightness is automatically updated by the game loop
                 } catch (NumberFormatException e) {
                     chat.addMessage("§c Invalid number: " + args[2]);
                 }

@@ -55,6 +55,7 @@ public class MenuManager {
         screens.put(GameState.CREATE_WORLD, new CreateWorldScreen(window, font, this));
         screens.put(GameState.MULTIPLAYER, new MultiplayerScreen(window, font, this));
         screens.put(GameState.OPTIONS, new OptionsScreen(window, font, this));
+        screens.put(GameState.PAUSED, new PauseScreen(window, font, this));
 
         for (Screen screen : screens.values()) {
             screen.screenWidth = screenWidth;

@@ -71,6 +71,33 @@ public class ChunkMesh {
     /**
      * Build VBO from vertex data
      */
+    /**
+     * ✅ Optimized Build from primitive array
+     * Eliminates overhead of converting List<Float> to array/buffer
+     */
+    public void build(float[] data, int floatCount) {
+        if (floatCount == 0 || data == null) {
+            return;
+        }
+
+        vertexCount = floatCount / 12; // 12 floats per vertex
+
+        // Create VBO directly from array
+        // We wrap it in a FloatBuffer
+        vertexBuffer = BufferUtils.createFloatBuffer(floatCount);
+        vertexBuffer.put(data, 0, floatCount);
+        vertexBuffer.flip();
+
+        // Create VBO
+        vboId = glGenBuffers();
+        glBindBuffer(GL_ARRAY_BUFFER, vboId);
+        glBufferData(GL_ARRAY_BUFFER, vertexBuffer, GL_STATIC_DRAW);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+    }
+
+    /**
+     * Build VBO from vertex data (Legacy)
+     */
     public void build() {
         if (vertices.isEmpty()) {
             return;
@@ -82,6 +109,7 @@ public class ChunkMesh {
             vertexBuffer.put(v);
         }
         vertexBuffer.flip();
+        vertexCount = vertices.size() / 12;
 
         // Create VBO
         vboId = glGenBuffers();

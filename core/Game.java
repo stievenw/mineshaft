@@ -21,15 +21,15 @@ import com.mineshaft.util.Screenshot;
 import com.mineshaft.player.GameMode;
 import com.mineshaft.world.RayCast;
 import com.mineshaft.world.World;
+import com.mineshaft.world.Chunk;
+import com.mineshaft.world.ChunkState;
 import com.mineshaft.world.WorldInfo;
 import com.mineshaft.world.interaction.BlockInteractionHandler;
 
-import org.lwjgl.BufferUtils;
 import org.lwjgl.glfw.*;
 import org.lwjgl.opengl.GL;
 import org.lwjgl.system.MemoryStack;
 
-import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
 
 import static org.lwjgl.glfw.GLFW.*;
@@ -48,6 +48,10 @@ public class Game {
     // Menu System
     private MenuManager menuManager;
     private boolean worldLoaded = false;
+    private boolean isLoadingTerrain = false; // ✅ Loading State
+    private long loadingStartTime = 0;
+    private int lastReadyChunks = 0;
+    private int readyChunkStabilityCounter = 0;
 
     // Game World (null until world is loaded)
     private World world;
@@ -150,7 +154,7 @@ public class Game {
         }
 
         glfwMakeContextCurrent(window);
-        glfwSwapInterval(vsyncEnabled ? 1 : 0);
+        glfwSwapInterval(0); // Force Unlimited FPS for performance testing
         glfwShowWindow(window);
 
         GL.createCapabilities();
@@ -262,7 +266,9 @@ public class Game {
         glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 
         worldLoaded = true;
-        System.out.println("[Game] World loaded successfully!");
+        isLoadingTerrain = true; // ✅ Enable loading screen state
+        loadingStartTime = System.currentTimeMillis(); // ✅ Start Timer
+        System.out.println("[Game] World loaded successfully, strictly loading terrain...");
     }
 
     /**
@@ -283,6 +289,11 @@ public class Game {
         glfwSetFramebufferSizeCallback(window, (w, width, height) -> {
             glViewport(0, 0, width, height);
             updateProjectionMatrix(width, height);
+
+            // ✅ FIX: Notify MenuManager of resize so buttons allow clicking
+            if (menuManager != null) {
+                menuManager.resize(width, height);
+            }
 
             if (chatOverlay != null) {
                 if (input.isKeyPressed(GLFW_KEY_T)) {
@@ -380,13 +391,116 @@ public class Game {
         int ticks = 0;
 
         while (running && !glfwWindowShouldClose(window)) {
+            // ✅ Handle Return to Main Menu (from Pause Screen)
+            if (worldLoaded && menuManager.getGameState() == GameState.MAIN_MENU) {
+                returnToMainMenu();
+                continue;
+            }
+
             long now = System.nanoTime();
             delta += (now - lastTime) / nsPerTick;
             lastTime = now;
 
             boolean isPlaying = menuManager.getGameState() == GameState.PLAYING && worldLoaded;
 
+            // ✅ LOADING SCREEN LOGIC (Minecraft-Style)
+            if (isLoadingTerrain && isPlaying) {
+                // 1. Calculate Progress (Strict Readiness)
+                int readyChunks = 0;
+                for (Chunk c : world.getChunks()) {
+                    if (c.getState() == ChunkState.READY) {
+                        readyChunks++;
+                    }
+                }
+
+                // ✅ FIX: Calculate target based on CIRCULAR load area (like World.java)
+                // Previous logic used Square ((2R+1)^2) which expected 625 chunks for R=12
+                // But World only loads ~450 chunks (Circle).
+                // Target should be approx PI * R^2
+                int r = Settings.RENDER_DISTANCE;
+                int target = (int) (Math.PI * r * r);
+
+                // Safety: Allow for some variability (chunk edge cases)
+                // If the world actually loaded slightly more/less, we don't want to get stuck.
+                // We use dynamic thresholding below.
+
+                // ✅ User requested: "Wait for 100 mesh builds"
+                int absoluteMin = Math.min(target, 100);
+                int percentMin = (int) (target * 0.90f); // Require 90% of the CIRCLE
+                int threshold = Math.max(absoluteMin, percentMin);
+
+                // Fallback: If readyChunks is STABLE (not increasing) for a long time, we
+                // should proceed
+                if (readyChunks > 0 && readyChunks == lastReadyChunks) {
+                    readyChunkStabilityCounter++;
+                    if (readyChunkStabilityCounter > 100) { // ~1-2 seconds of stuck count
+                        // Force threshold down to current count if reasonable
+                        if (readyChunks > target * 0.8) {
+                            threshold = readyChunks;
+                        }
+                    }
+                } else {
+                    lastReadyChunks = readyChunks;
+                    readyChunkStabilityCounter = 0;
+                }
+
+                int pendingMeshes = world.getRenderer().getPendingBuilds();
+                int pendingGen = world.getPendingGenerations();
+
+                String status = "Loading Terrain...";
+
+                // Prioritize Mesh Build status if high
+                if (pendingMeshes > 100) {
+                    status = "Building Meshes (" + pendingMeshes + " left)...";
+                } else if (readyChunks < threshold || pendingGen > 0) {
+                    status = "Generating Chunks (" + readyChunks + "/" + target + ")...";
+                } else if (pendingMeshes > 0) { // Still low amount of meshes building
+                    status = "Stabilizing (" + pendingMeshes + " left)...";
+                } else {
+                    status = "Stabilizing...";
+                }
+
+                // Debug: Clear to Magenta (If you see this, DebugScreen failed)
+                glClearColor(1.0f, 0.0f, 1.0f, 1.0f);
+                glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+                // 2. Render Loading Screen
+                if (debugScreen != null) {
+                    debugScreen.drawLoadingScreen(readyChunks, target, status);
+                }
+
+                if (System.currentTimeMillis() % 1000 < 20) {
+                    System.out.println("[Game] Loading: Ready=" + readyChunks + "/" + target +
+                            " (Req: " + threshold + ") | MeshQ: " + pendingMeshes + " | GenQ: " + pendingGen);
+                }
+
+                // 3. Force Update World Generation (High Speed / No Tick Limit)
+                int px = (int) Math.floor(player.getX()) >> 4;
+                int pz = (int) Math.floor(player.getZ()) >> 4;
+                world.updateChunks(px, pz);
+                world.getRenderer().update();
+
+                glfwSwapBuffers(window);
+                glfwPollEvents();
+
+                // 4. Check Exit Condition
+                // Strict: Met threshold AND queues empty AND min time passed
+                boolean minTimePassed = (System.currentTimeMillis() - loadingStartTime) > 2000;
+
+                // Wait for mesh builds to drop below 100 (stable enough)
+                if (readyChunks >= threshold && pendingMeshes < 100 && pendingGen == 0 && minTimePassed) {
+                    isLoadingTerrain = false;
+                }
+                continue; // Skip physics/game render
+            }
+
             if (isPlaying) {
+                // ESCAPE to Pause
+                if (input.isKeyPressed(GLFW_KEY_ESCAPE)) {
+                    menuManager.setGameState(GameState.PAUSED);
+                    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+                }
+
                 while (delta >= 1) {
                     if (chatOverlay != null && !chatOverlay.isChatOpen()) {
                         player.updateInput();
@@ -471,6 +585,12 @@ public class Game {
         if (world.getRenderer() != null) {
             float brightness = timeOfDay.getBrightness();
             world.getRenderer().setTimeOfDayBrightness(brightness);
+
+            // ✅ DEBUG: Log brightness updates (throttled to avoid spam)
+            if (Settings.DEBUG_MODE && System.currentTimeMillis() % 5000 < 50) {
+                System.out.printf("[Game] Applied brightness to renderer: %.3f (Sky Light: %d)%n",
+                        brightness, timeOfDay.getSkylightLevel());
+            }
         }
 
         // ❌ REMOVED: Don't update skylight values for time change!
@@ -489,7 +609,7 @@ public class Game {
         world.updateSunLight();
 
         // ✅ Process lighting updates (block light changes only)
-        world.getLightingEngine().update();
+        // world.getLightingEngine().update();
 
         // ✅ Update sky renderer
         if (skyRenderer != null) {
@@ -520,22 +640,13 @@ public class Game {
             return;
 
         float[] skyColor = timeOfDay.getSkyColor();
-        float[] fogColor = timeOfDay.getFogColor();
 
         glClearColor(skyColor[0], skyColor[1], skyColor[2], 1.0f);
-
-        if (Settings.ENABLE_FOG) {
-            FloatBuffer fogColorBuffer = BufferUtils.createByteBuffer(16).asFloatBuffer();
-            fogColorBuffer.put(fogColor[0]);
-            fogColorBuffer.put(fogColor[1]);
-            fogColorBuffer.put(fogColor[2]);
-            fogColorBuffer.put(1.0f);
-            fogColorBuffer.flip();
-            glFogfv(GL_FOG_COLOR, fogColorBuffer);
-        }
-
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glLoadIdentity();
+
+        // ✅ CRITICAL: Apply fog BEFORE world render!
+        camera.applyUnderwaterEffect(skyColor);
 
         if (cameraMode == 0) {
             camera.applyTranslations(partialTicks);
@@ -562,14 +673,13 @@ public class Game {
         }
 
         glColor3f(1.0f, 1.0f, 1.0f);
-        camera.applyUnderwaterEffect();
 
         if (guiVisible && hud != null) {
             hud.render(inventory.getSelectedSlot());
         }
 
         if (debugScreen != null) {
-            debugScreen.render(camera, world, player.getGameMode(), fps, tps, vsyncEnabled);
+            debugScreen.render(camera, world, player.getGameMode(), fps, tps, vsyncEnabled, timeOfDay);
         }
 
         if (chatOverlay != null) {
@@ -654,11 +764,6 @@ public class Game {
             if (chatOverlay.isChatOpen()) {
                 return;
             }
-        }
-
-        if (input.isKeyPressed(GLFW_KEY_ESCAPE)) {
-            returnToMainMenu();
-            return;
         }
 
         if (input.isKeyPressed(GLFW_KEY_F3)) {
